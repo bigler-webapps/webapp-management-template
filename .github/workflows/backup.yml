@@ -1,0 +1,41 @@
+name: Backup
+
+# Daily restic backups to Backblaze B2.
+# Runs on schedule plus manual dispatch.
+
+on:
+  schedule:
+    - cron: "25 2 * * *"  # 02:25 UTC daily
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target environment from inventory.yaml"
+        required: true
+        type: environment
+      sync_staging:
+        description: "After backup, sync prod data to staging"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target || 'production' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Run backup
+        uses: bigler-webapps/workflow-templates/.github/actions/backup@main
+        with:
+          target: ${{ inputs.target || 'production' }}
+          sync_staging: ${{ inputs.sync_staging || false }}
+          ssh_host: ${{ secrets.SSH_HOST }}
+          ssh_user: ${{ secrets.SSH_USER }}
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          restic_repo_b2: ${{ secrets.RESTIC_REPO_B2 }}
+          restic_password: ${{ secrets.RESTIC_PASSWORD }}
+          b2_key_id: ${{ secrets.B2_KEY_ID }}
+          b2_app_key: ${{ secrets.B2_APP_KEY }}

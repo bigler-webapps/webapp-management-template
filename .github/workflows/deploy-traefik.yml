@@ -1,0 +1,37 @@
+name: Deploy Traefik Infrastructure
+
+# Deploys the Traefik infrastructure stack (Traefik, Uptime Kuma, etc.)
+# to the target server.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target environment from inventory.yaml"
+        required: true
+        type: environment
+      target_environment:
+        description: "Target environment label for generate-env (production / staging)"
+        required: false
+        type: string
+        default: "production"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Deploy Traefik stack
+        uses: bigler-webapps/workflow-templates/.github/actions/deploy-traefik@main
+        with:
+          target: ${{ inputs.target }}
+          target_environment: ${{ inputs.target_environment }}
+          remote_path: /srv/infrastructure/webapp-management
+          ssh_host: ${{ secrets.SSH_HOST }}
+          ssh_user: ${{ secrets.SSH_USER }}
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          secrets_context_json: ${{ toJson(secrets) }}

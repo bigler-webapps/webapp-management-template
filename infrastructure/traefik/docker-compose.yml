@@ -1,0 +1,146 @@
+# Traefik infrastructure stack — minimal viable
+#
+# Includes:
+#   - Traefik v3.6 (reverse proxy, Let's Encrypt, dashboard)
+#   - Uptime Kuma (heartbeat monitoring)
+#   - Watchtower (image updates, monitor-only by default)
+#   - Two docker-socket-proxy instances (one for Traefik, one for Watchtower)
+#
+# NOT included (intentionally minimal — add later if you adopt them):
+#   - WireGuard (replaced by Tailscale on host; see ARCHITECTURE.md)
+#   - traefik-cert-dumper (only needed if your apps consume the Traefik-issued certs)
+#   - vpn-only middleware on Dashboard router (depends on VPN being set up)
+#
+# Before first deploy:
+#   docker network create traefik_proxy
+# This is required because the network is declared external: true.
+
+services:
+  traefik:
+    image: traefik:v3.6
+    container_name: traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - TRAEFIK_DASHBOARD_AUTH=${TRAEFIK_DASHBOARD_AUTH}
+      - DOCKER_HOST=tcp://docker-socket-proxy-traefik:2375
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./acme.json:/acme.json
+      - ./dynamic:/etc/traefik/dynamic:ro
+    networks:
+      - proxy
+    command:
+      - "--log.level=INFO"
+      - "--providers.docker=true"
+      - "--providers.docker.endpoint=tcp://docker-socket-proxy-traefik:2375"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=traefik_proxy"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+      # Entrypoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.websecure.http.tls.options=default"
+      # SSL via Let's Encrypt TLS-ALPN challenge
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.myresolver.acme.storage=/acme.json"
+      # Dashboard via secured router (BasicAuth + rate-limit)
+      - "--api.dashboard=true"
+    labels:
+      - "traefik.enable=true"
+      # Global security headers middleware (also referenced by app routers)
+      - "traefik.http.middlewares.sec-headers.headers.stsSeconds=15552000"
+      - "traefik.http.middlewares.sec-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.sec-headers.headers.stsPreload=true"
+      - "traefik.http.middlewares.sec-headers.headers.customResponseHeaders.X-Frame-Options=SAMEORIGIN"
+      - "traefik.http.middlewares.sec-headers.headers.customResponseHeaders.X-Content-Type-Options=nosniff"
+      - "traefik.http.middlewares.sec-headers.headers.customResponseHeaders.Referrer-Policy=strict-origin-when-cross-origin"
+      # BasicAuth for the dashboard
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH}"
+      # Dashboard router
+      # NOTE: minimal viable uses only BasicAuth + sec-headers + rate-limit.
+      # If you adopt VPN later, add `vpn-only@file` to the middlewares list and
+      # define that middleware in dynamic/middlewares.yml.
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`${DOMAIN_TRAEFIK}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=myresolver"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard.middlewares=sec-headers,dashboard-ratelimit@file,traefik-auth"
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    restart: unless-stopped
+    volumes:
+      - ./uptime-kuma-data:/app/data
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.kuma.rule=Host(`${DOMAIN_KUMA}`)"
+      - "traefik.http.routers.kuma.entrypoints=websecure"
+      - "traefik.http.routers.kuma.tls.certresolver=myresolver"
+      # NOTE: minimal viable exposes Kuma to the internet behind its own auth.
+      # If you adopt VPN later, add `vpn-only@file` to restrict.
+      - "traefik.http.routers.kuma.middlewares=sec-headers"
+      - "traefik.http.services.kuma.loadbalancer.server.port=3001"
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  watchtower:
+    image: containrrr/watchtower:1.7.1
+    container_name: watchtower
+    restart: unless-stopped
+    environment:
+      DOCKER_HOST: tcp://docker-socket-proxy-watchtower:2375
+      DOCKER_API_VERSION: "1.44"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_INCLUDE_RESTARTING: "true"
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_SCHEDULE: "0 0 3 * * *"
+      WATCHTOWER_MONITOR_ONLY: "true"
+    networks:
+      - socket_proxy
+
+  docker-socket-proxy-traefik:
+    image: tecnativa/docker-socket-proxy:0.3
+    container_name: docker-socket-proxy-traefik
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      EVENTS: "1"
+      NETWORKS: "1"
+      INFO: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - proxy
+      - socket_proxy
+
+  docker-socket-proxy-watchtower:
+    image: tecnativa/docker-socket-proxy:0.3
+    container_name: docker-socket-proxy-watchtower
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      IMAGES: "1"
+      NETWORKS: "1"
+      INFO: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket_proxy
+
+networks:
+  proxy:
+    name: traefik_proxy
+    external: true
+  socket_proxy:
+    name: socket_proxy

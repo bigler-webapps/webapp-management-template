@@ -1,0 +1,68 @@
+name: Restore
+
+# Restore an app DB from a restic snapshot.
+# Production restore is a destructive operation - protect via GitHub Environment "production-destructive"
+# with Required Reviewers.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target environment from inventory.yaml"
+        required: true
+        type: environment
+      app_name:
+        description: "App identifier"
+        required: true
+        type: string
+      target_env:
+        description: "Where the data should go"
+        required: true
+        type: choice
+        default: "staging"
+        options:
+          - staging
+          - zip-file
+          - production
+      snapshot_id:
+        description: "Restic snapshot id (or 'latest')"
+        required: true
+        type: string
+        default: "latest"
+      confirm_destroy:
+        description: "Type DESTROY to confirm production restore (ignored for non-prod)"
+        required: false
+        type: string
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm production restore
+        if: ${{ inputs.target_env == 'production' }}
+        run: |
+          if [ "${{ inputs.confirm_destroy }}" != "DESTROY" ]; then
+            echo "Production restore requires confirm_destroy=DESTROY"
+            exit 1
+          fi
+
+  restore:
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_env == 'production' && 'production-destructive' || inputs.target }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Run restore
+        uses: bigler-webapps/workflow-templates/.github/actions/restore@main
+        with:
+          target: ${{ inputs.target }}
+          app_name: ${{ inputs.app_name }}
+          target_env: ${{ inputs.target_env }}
+          snapshot_id: ${{ inputs.snapshot_id }}
+          ssh_host: ${{ secrets.SSH_HOST }}
+          ssh_user: ${{ secrets.SSH_USER }}
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          restic_password: ${{ secrets.RESTIC_PASSWORD }}

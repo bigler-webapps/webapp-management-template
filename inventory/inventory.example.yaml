@@ -1,0 +1,42 @@
+# Tenant Inventory — example file
+#
+# Copy this file to inventory.yaml and adapt to your targets.
+# inventory.yaml is gitignored — it holds tenant-specific values.
+#
+# Each top-level target key matches the name of a GitHub Environment.
+
+version: 1
+
+targets:
+  # Example: a single production server.
+  # Rename "production" to match your GitHub Environment name.
+  production:
+    github_environment: production
+    deploy_user: deploy
+    roles:
+      - traefik
+      - backup
+      - maintenance
+      - janitor
+      - ssh_sync
+      - restore
+    # Apps whose production data should be synced to staging after backup.
+    # Leave empty if no staging is configured.
+    sync_staging_apps: []
+    # Container name tokens expected to be running after maintenance.
+    # Used by maintenance workflow for health verification.
+    expected_container_tokens:
+      - traefik
+      # - your-app-name
+
+  # Optional: a staging server.
+  # staging:
+  #   github_environment: staging
+  #   deploy_user: deploy
+  #   roles:
+  #     - traefik
+  #     - maintenance
+  #     - ssh_sync
+  #   sync_staging_apps: []
+  #   expected_container_tokens:
+  #     - traefik
