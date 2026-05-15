@@ -15,6 +15,8 @@ on:
 
 jobs:
   janitor:
+    # Skip on the template repo itself; tenant forks run normally.
+    if: github.repository != 'bigler-webapps/webapp-management-template'
     runs-on: ubuntu-latest
     environment: ${{ inputs.target || 'production' }}
     permissions:

@@ -20,6 +20,9 @@ on:
 
 jobs:
   backup:
+    # Skip when running on the template repo itself (no secrets, no servers).
+    # Tenant forks have a different repository name and run normally.
+    if: github.repository != 'bigler-webapps/webapp-management-template'
     runs-on: ubuntu-latest
     environment: ${{ inputs.target || 'production' }}
     permissions:
