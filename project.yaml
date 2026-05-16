@@ -12,7 +12,7 @@ environments:
   production:
     use_traefik: true
     # List the public domains you'll route to via Traefik.
-    # Variable mapping (DOMAIN_TRAEFIK, DOMAIN_KUMA) happens via secrets, not here.
+    # Variable mapping (DOMAIN_KUMA) happens via secrets, not here.
     domains:
       - "traefik.example.com"
       - "kuma.example.com"

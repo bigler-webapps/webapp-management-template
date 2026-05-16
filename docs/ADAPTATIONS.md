@@ -23,15 +23,14 @@ deploy.
 - [ ] `secrets.values.yaml` is NOT committed (verify `git status`)
 - [ ] Backup of `secrets.values.yaml` exists outside the repo (encrypted)
 
-### 2. `infrastructure/traefik/docker-compose.yml`
+### 2. `docker-compose.yml`
 
-- [ ] Reviewed: is the WireGuard container needed? (Recommend: remove and use Tailscale instead)
 - [ ] Reviewed: is Uptime Kuma needed? (Recommend: keep, set up via UI after deploy)
-- [ ] `DOMAIN_TRAEFIK`, `DOMAIN_KUMA` are set via environment variables you've added
-- [ ] `traefik_cert_dumper` container — keep if your apps need exposed certs; remove otherwise
+- [ ] `DOMAIN_KUMA` is set via environment variables you've added
 - [ ] Watchtower image is version-pinned (not `:latest`)
+- [ ] Traefik dashboard: disabled by default. Activate via [DASHBOARD.md](DASHBOARD.md) if needed.
 
-### 3. `infrastructure/traefik/dynamic/middlewares.yml`
+### 3. `dynamic/middlewares.yml`
 
 - [ ] `vpn-only` middleware: source ranges match your real VPN CIDR
   - If you use Tailscale: `100.64.0.0/10` (Tailscale CGNAT range)

@@ -32,7 +32,8 @@ are public OSS that you consume. You operate your own infrastructure end-to-end.
   └─ restore.yml              #   manual restore, production protected
 access/                   # Managed public keys per role
 inventory/                # Target inventory (example file)
-infrastructure/traefik/   # Traefik + dynamic config
+docker-compose.yml        # Traefik stack (proxy, kuma, watchtower)
+dynamic/                  # Traefik dynamic config (middlewares)
 docs/                     # Detailed onboarding + reference
 secrets.yaml              # Secret schema (committed)
 secrets.values.example.yaml  # Example values per target (committed)
