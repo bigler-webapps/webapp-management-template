@@ -1,138 +1,103 @@
-# Activating the Traefik Web Dashboard (optional)
+# Traefik Web Dashboard — Setup & Troubleshooting
 
-The default template ships **without** the Traefik web dashboard. Traefik itself runs as your reverse proxy; you just don't get a browser UI for routes/services/etc. Most operators don't need it — Traefik logs + `docker ps` cover daily ops.
+The default stack includes Traefik's web dashboard with BasicAuth. This doc covers the gotchas around bcrypt hashes in docker-compose-substitution chains.
 
-If you want the dashboard, follow this guide.
+## Quick recap of what you need
 
-## Why opt-in?
+Three secrets feed the dashboard:
 
-The dashboard requires HTTP BasicAuth (a bcrypt-hashed password). Routing the htpasswd hash through GitHub Secrets, env-substitution, and docker-compose interpolation is fragile (`$`-signs get mis-interpreted in multiple layers). Keeping it out of the default keeps every new tenant from stumbling over the same gotcha.
+| Secret | Where | Example |
+|---|---|---|
+| `TRAEFIK_DASHBOARD_AUTH` | `secrets.values.yaml` → GitHub Env | `'admin:$$2y$$05$$BcryptHash...'` |
+| `DOMAIN_TRAEFIK` | dito | `traefik.example.com` |
+| `ACME_EMAIL` | dito | `you@example.com` |
 
-## What you need to add
+Plus DNS: A-Record `traefik.example.com` → Server-IP.
 
-### 1. Two new secrets
-
-In `secrets.yaml`, uncomment / add:
-
-```yaml
-secrets:
-  # ... existing ones ...
-
-  DOMAIN_TRAEFIK:
-    {}
-  TRAEFIK_DASHBOARD_AUTH:
-    # htpasswd-format string, e.g. 'admin:$$2y$$05$$BcryptHashHere'
-    # Note the $$ — must be DOUBLE dollars in secrets.values.yaml so compose
-    # later interpolates them as single $.
-    {}
-```
-
-In `secrets.values.yaml`:
-
-```yaml
-targets:
-  production:
-    # ... existing ones ...
-    DOMAIN_TRAEFIK: "traefik.example.com"
-    TRAEFIK_DASHBOARD_AUTH: 'admin:$$2y$$05$$YourBcryptHashHere'
-```
-
-Generate the hash:
+## Generating the hash
 
 ```bash
-# Linux/macOS/Git Bash with sed:
-docker run --rm httpd:2.4-alpine sh -c "htpasswd -nbB admin 'YourPassword' | sed -e 's/\$/\$\$/g'"
-
-# Windows cmd (manual):
+# Easiest (Docker required):
 docker run --rm httpd:2.4-alpine htpasswd -nbB admin "YourPassword"
-# then replace every $ with $$ in the output before pasting into secrets.values.yaml
 ```
 
-Then push:
-
-```bash
-sync-secrets --target github --secret-source yaml \
-  --values-file secrets.values.yaml --secret-target production
+Output:
+```
+admin:$2y$05$abcDEF123...
 ```
 
-### 2. Compose-File anpassen
+## The $$-escape rule
 
-Edit `docker-compose.yml`:
+`docker-compose` interprets `$` as variable-reference. When the value contains a literal `$` (every bcrypt hash does), you must escape it as `$$`:
 
-**a)** In the `traefik` service, add an environment variable and enable the API:
+**htpasswd output:**
+```
+admin:$2y$05$abcDEF123...
+```
 
+**What goes into `secrets.values.yaml`:**
 ```yaml
-services:
-  traefik:
-    environment:
-      - DOCKER_HOST=tcp://docker-socket-proxy-traefik:2375
-      - TRAEFIK_DASHBOARD_AUTH=${TRAEFIK_DASHBOARD_AUTH}   # ADD THIS
-    command:
-      # ... existing flags ...
-      - "--api.dashboard=true"                              # ADD THIS
-    labels:
-      - "traefik.enable=true"
-      # ... existing security-header labels ...
-
-      # ADD: BasicAuth middleware
-      - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH}"
-
-      # ADD: Dashboard router
-      - "traefik.http.routers.traefik-dashboard.rule=Host(`${DOMAIN_TRAEFIK}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
-      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
-      - "traefik.http.routers.traefik-dashboard.tls.certresolver=myresolver"
-      - "traefik.http.routers.traefik-dashboard.service=api@internal"
-      - "traefik.http.routers.traefik-dashboard.middlewares=sec-headers,dashboard-ratelimit@file,traefik-auth"
+TRAEFIK_DASHBOARD_AUTH: 'admin:$$2y$$05$$abcDEF123...'
 ```
 
-**b)** Activate the `dashboard-ratelimit` middleware. Edit `dynamic/middlewares.yml`, uncomment:
+Every single `$` → double `$$`. A bcrypt hash typically has 3 `$` signs (before `2y`, before `05`, before the body), so you'll get 3× `$$` after escaping.
 
-```yaml
-http:
-  middlewares:
-    dashboard-ratelimit:
-      rateLimit:
-        average: 5
-        burst: 10
-        period: 1m
+Use **single quotes** around the value in YAML so the parser doesn't interpret anything itself.
+
+**SAVE THE FILE** (Ctrl+S in VS Code) before running `sync-secrets`. This is the #1 reason the dashboard breaks on first deploy — the editor showed `$$` on screen but the file on disk still had `$`.
+
+## How the value flows through the pipeline
+
+```
+secrets.values.yaml   →   GitHub Secret   →   .env on server   →   docker-compose substitution
+admin:$$2y$$05$$Hash      admin:$$2y$$05$$Hash    admin:$$2y$$05$$Hash    admin:$2y$05$Hash
+                                                                          ↑ compose reduces $$ to $
 ```
 
-### 3. DNS-Record für `traefik.example.com`
-
-Cloudflare oder anderer DNS-Provider — A-Record auf Server-IP.
-
-### 4. Deploy
-
-```bash
-# Optional: validate compose locally
-docker compose --env-file .env config
-
-# Trigger deploy-traefik via GitHub Actions
-```
-
-Browser → `https://traefik.example.com` → BasicAuth-Prompt.
+Every stage keeps `$$` literal. Only docker-compose's variable-substitution does the final reduction. If you see `$2y` somewhere before the final substitution, you have a `$$` missing earlier.
 
 ## Troubleshooting
 
-### Warning: "variable XXXX is not set, defaulting to blank string"
+### "variable XXXX is not set, defaulting to a blank string"
 
-Heißt: das `$$`-Escape in `secrets.values.yaml` ist nicht doppelt. Bcrypt-Hashes haben typisch 3 `$`-Zeichen (vor `2y`, vor `05`, vor dem Body) — alle müssen verdoppelt sein.
-
-Test: `cat .env | grep TRAEFIK_DASHBOARD_AUTH` auf dem Server muss zeigen:
+**Symptom:** Deploy-Workflow logs:
 ```
-TRAEFIK_DASHBOARD_AUTH=admin:$$2y$$05$$Hash...
+time="..." level=warning msg="The \"abcDEF123\" variable is not set. Defaulting to a blank string."
 ```
 
-Wenn nur einfache `$` da stehen: in `secrets.values.yaml` korrigieren, `sync-secrets` erneut.
+That `abcDEF123` is part of the bcrypt hash. Docker compose is trying to interpolate it as `$abcDEF123`.
 
-### Dashboard zeigt 404
+**Cause:** `$$` somewhere in the pipeline collapsed to `$`. Find where.
 
-DNS-Propagation? `dig +short traefik.example.com` muss Server-IP zurückgeben.
+**Diagnose on the server:**
 
-### BasicAuth-Prompt aber Login schlägt fehl
+```bash
+ssh deploy@<server>
+cd /srv/infrastructure/webapp-management
+grep TRAEFIK_DASHBOARD_AUTH .env
+```
 
-Falscher Hash. Hash für **dasselbe** Passwort neu generieren (htpasswd ist nicht-deterministisch), `secrets.values.yaml` updaten, `sync-secrets`, deploy-traefik erneut.
+| `.env` shows | Diagnosis |
+|---|---|
+| `admin:$$2y$$05$$...` (double `$`) | The pipeline is fine — issue is in docker compose or compose version mismatch |
+| `admin:$2y$05$...` (single `$`) | `$$` was reduced before reaching the server. Check `secrets.values.yaml` is **saved** and contains `$$`. Re-run `sync-secrets` after saving. |
 
-## Deaktivieren
+### Dashboard returns 404
 
-Reverse die Schritte 1-2. Oder: Dashboard-spezifische Labels + Command-Flag wieder rausnehmen, `TRAEFIK_DASHBOARD_AUTH`-Verwendung entfernen, deploy-traefik erneut. Die GitHub-Secrets können bleiben — werden ignoriert, wenn nicht in compose referenziert.
+DNS-Propagation. `dig +short traefik.example.com` must return the server IP. Wait 5-10 min, retry.
+
+### BasicAuth prompt appears but password rejected
+
+Wrong hash. Bcrypt is non-deterministic — generating the hash twice for the same password yields different hashes (both valid). Make sure the hash you put in `secrets.values.yaml` matches the password you're typing.
+
+Generate a fresh hash, update `secrets.values.yaml`, save, `sync-secrets`, redeploy.
+
+### Want to disable the dashboard
+
+Remove from `docker-compose.yml`:
+- `TRAEFIK_DASHBOARD_AUTH` env-var
+- `--api.dashboard=true` command flag
+- `traefik-auth` middleware label
+- `traefik-dashboard` router labels
+
+Redeploy. GitHub secrets can stay (unused).

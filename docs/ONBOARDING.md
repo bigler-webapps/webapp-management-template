@@ -168,8 +168,8 @@ and `/root/.ssh/authorized_keys` on the server.
 ## Step 9 — Deploy Traefik infrastructure
 
 1. Adapt `docker-compose.yml` to your needs
-   - Set your `DOMAIN_KUMA` in secrets (or hardcode if you prefer)
-   - The Traefik web dashboard is **disabled by default** — see [DASHBOARD.md](DASHBOARD.md) if you want to enable it
+   - Set `DOMAIN_TRAEFIK`, `DOMAIN_KUMA`, `ACME_EMAIL`, `TRAEFIK_DASHBOARD_AUTH` in secrets
+   - **Important:** `TRAEFIK_DASHBOARD_AUTH` needs `$$` (double-dollar) escaping — see [DASHBOARD.md](DASHBOARD.md) for the gotchas
    - Remove the WireGuard service if you don't use it (recommended — use Tailscale instead)
 2. Trigger `Deploy Traefik Infrastructure` workflow
 3. Point your DNS A-records to the server IP:

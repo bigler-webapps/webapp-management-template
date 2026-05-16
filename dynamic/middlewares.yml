@@ -1,22 +1,19 @@
 # Traefik dynamic middlewares
 #
 # Loaded by the file provider — changes here are picked up at runtime.
-# Defaults are intentionally minimal. Add middlewares here as you adopt them.
 
 http:
-  middlewares: {}
+  middlewares:
 
-    # Example: rate-limit for the Traefik dashboard. Uncomment if you activate
-    # the dashboard (see docs/DASHBOARD.md).
-    # dashboard-ratelimit:
-    #   rateLimit:
-    #     average: 5
-    #     burst: 10
-    #     period: 1m
+    # Rate limit for the Traefik dashboard. Adjust burst/average to taste.
+    dashboard-ratelimit:
+      rateLimit:
+        average: 5
+        burst: 10
+        period: 1m
 
-    # Example: VPN-only access. Uncomment and adapt CIDR if you adopt Tailscale
-    # or WireGuard. Then reference it via `vpn-only@file` on a router's
-    # `middlewares` list.
+    # OPTIONAL — uncomment and adapt CIDR if you adopt a VPN (Tailscale/WireGuard).
+    # Then add `vpn-only@file` to your route middlewares list.
     # vpn-only:
     #   ipWhiteList:
     #     sourceRange:

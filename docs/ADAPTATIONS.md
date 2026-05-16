@@ -26,9 +26,9 @@ deploy.
 ### 2. `docker-compose.yml`
 
 - [ ] Reviewed: is Uptime Kuma needed? (Recommend: keep, set up via UI after deploy)
-- [ ] `DOMAIN_KUMA` is set via environment variables you've added
+- [ ] `DOMAIN_TRAEFIK`, `DOMAIN_KUMA`, `ACME_EMAIL` are set via secrets
+- [ ] `TRAEFIK_DASHBOARD_AUTH` is set with **`$$`-escaped** bcrypt hash (see [DASHBOARD.md](DASHBOARD.md))
 - [ ] Watchtower image is version-pinned (not `:latest`)
-- [ ] Traefik dashboard: disabled by default. Activate via [DASHBOARD.md](DASHBOARD.md) if needed.
 
 ### 3. `dynamic/middlewares.yml`
 

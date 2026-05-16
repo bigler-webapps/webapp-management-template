@@ -120,16 +120,10 @@ sync-secrets --target github
 
 | Key | Description |
 |---|---|
+| `TRAEFIK_DASHBOARD_AUTH` | htpasswd-format auth string — **`$$`-escape required**, see [DASHBOARD.md](DASHBOARD.md) |
 | `ACME_EMAIL` | Email for Let's Encrypt |
-| `DOMAIN_KUMA` | Uptime Kuma hostname |
-
-The Traefik web dashboard is **disabled by default**. If you enable it (see
-[DASHBOARD.md](DASHBOARD.md)) you'll also add:
-
-| Key | Description |
-|---|---|
-| `TRAEFIK_DASHBOARD_AUTH` | htpasswd-format auth string (with `$$` escape) |
 | `DOMAIN_TRAEFIK` | Traefik dashboard hostname |
+| `DOMAIN_KUMA` | Uptime Kuma hostname |
 
 ### App-specific
 
@@ -143,7 +137,7 @@ Apps live in their own repos with their own secrets schemas.
 | `SSH_PRIVATE_KEY_ROOT` | 12 months | Same |
 | B2 keys | 12 months | Same |
 | `RESTIC_PASSWORD` | **NEVER** | Loss = backups unrecoverable |
-| `TRAEFIK_DASHBOARD_AUTH` (only if dashboard enabled) | 6 months | Compromise |
+| `TRAEFIK_DASHBOARD_AUTH` | 6 months | Compromise |
 | App-specific | per provider | per provider |
 
 ## Backup of secrets.values.yaml

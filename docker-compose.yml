@@ -1,13 +1,12 @@
 # Traefik infrastructure stack — minimal viable
 #
 # Includes:
-#   - Traefik v3.6 (reverse proxy, Let's Encrypt)
+#   - Traefik v3.6 (reverse proxy, Let's Encrypt, web dashboard with BasicAuth)
 #   - Uptime Kuma (heartbeat monitoring)
 #   - Watchtower (image updates, monitor-only by default)
 #   - Two docker-socket-proxy instances (one for Traefik, one for Watchtower)
 #
-# NOT included (intentionally minimal — opt-in if you adopt them):
-#   - Traefik web dashboard (see docs/DASHBOARD.md to enable)
+# NOT included (intentionally minimal — add later if you adopt them):
 #   - WireGuard (replaced by Tailscale on host; see ARCHITECTURE.md)
 #   - traefik-cert-dumper (only needed if your apps consume Traefik-issued certs)
 #   - vpn-only middleware (depends on VPN being set up)
@@ -15,6 +14,9 @@
 # Before first deploy:
 #   docker network create traefik_proxy
 # (Required because the network is declared external: true.)
+#
+# Dashboard secret format: see secrets.values.example.yaml — `$$` escape is
+# REQUIRED in the bcrypt hash. See docs/DASHBOARD.md for troubleshooting.
 
 services:
   traefik:
@@ -27,6 +29,7 @@ services:
       - "80:80"
       - "443:443"
     environment:
+      - TRAEFIK_DASHBOARD_AUTH=${TRAEFIK_DASHBOARD_AUTH}
       - DOCKER_HOST=tcp://docker-socket-proxy-traefik:2375
     volumes:
       - /etc/localtime:/etc/localtime:ro
@@ -52,7 +55,8 @@ services:
       - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
       - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
       - "--certificatesresolvers.myresolver.acme.storage=/acme.json"
-      # Web dashboard disabled by default. See docs/DASHBOARD.md to enable.
+      # Dashboard (secured below via BasicAuth + rate-limit + sec-headers)
+      - "--api.dashboard=true"
     labels:
       - "traefik.enable=true"
       # Global security headers middleware (also referenced by app routers)
@@ -62,6 +66,16 @@ services:
       - "traefik.http.middlewares.sec-headers.headers.customResponseHeaders.X-Frame-Options=SAMEORIGIN"
       - "traefik.http.middlewares.sec-headers.headers.customResponseHeaders.X-Content-Type-Options=nosniff"
       - "traefik.http.middlewares.sec-headers.headers.customResponseHeaders.Referrer-Policy=strict-origin-when-cross-origin"
+      # BasicAuth for the dashboard
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH}"
+      # Dashboard router
+      # NOTE: minimal viable uses BasicAuth + sec-headers + rate-limit.
+      # If you adopt VPN later, add `vpn-only@file` to the middlewares list.
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`${DOMAIN_TRAEFIK}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=myresolver"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard.middlewares=sec-headers,dashboard-ratelimit@file,traefik-auth"
 
   uptime-kuma:
     image: louislam/uptime-kuma:1
