@@ -1,0 +1,48 @@
+name: Sync Uptime Kuma Notifications
+
+# Idempotently registers / updates the notification channels defined in
+# monitoring/notifications.yml against your Uptime Kuma server.
+#
+# Run this once after initial Kuma setup, or after editing the config.
+# It's safe to re-run — entries are matched by name.
+#
+# Prereqs: secrets KUMA_URL, KUMA_AUTOMATION_USER, KUMA_AUTOMATION_PASSWORD
+# (and any per-channel secrets you reference in notifications.yml, e.g.
+# DISCORD_WEBHOOK_URL).
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "GitHub environment / inventory target"
+        required: true
+        type: environment
+      prune:
+        description: "Delete Kuma notifications absent from the config"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: kuma-notifications-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # Skip on the template repo itself; tenant forks run normally.
+    if: github.repository != 'bigler-webapps/webapp-management-template'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: bigler-webapps/workflow-templates/.github/actions/sync-kuma-notifications@main
+        with:
+          config_path: monitoring/notifications.yml
+          kuma_url: ${{ secrets.KUMA_URL }}
+          kuma_user: ${{ secrets.KUMA_AUTOMATION_USER }}
+          kuma_password: ${{ secrets.KUMA_AUTOMATION_PASSWORD }}
+          discord_webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          prune: ${{ inputs.prune && 'true' || 'false' }}

@@ -1,0 +1,25 @@
+# Uptime Kuma notification channels — config-as-code.
+#
+# Synced to Kuma via `Sync Uptime Kuma Notifications` workflow.
+#
+# Adapt to your team's channels. Notifications marked `default: true` are
+# applied to ALL existing monitors AND auto-applied to every new monitor →
+# app-level monitor.yml files don't need to reference notifications.
+#
+# Env-var expansion (${FOO}) happens at sync time from the secrets passed
+# into the composite action.
+#
+# Example: Discord webhook (drop in your own webhook URL via secrets):
+#
+#   notifications:
+#     - name: discord-alerts
+#       type: discord
+#       default: true
+#       config:
+#         discordUsername: "Kuma"
+#         discordWebhookUrl: "${DISCORD_WEBHOOK_URL}"
+#
+# Other supported types include: telegram, slack, smtp, ntfy, gotify, …
+# See https://uptime-kuma-api.readthedocs.io for the parameter names per type.
+
+notifications: []

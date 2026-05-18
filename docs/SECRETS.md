@@ -125,6 +125,27 @@ sync-secrets --server
 | `DOMAIN_TRAEFIK` | Traefik dashboard hostname |
 | `DOMAIN_KUMA` | Uptime Kuma hostname |
 
+### Uptime Kuma automation (optional)
+
+Only needed if you use the `sync-kuma-notifications` workflow and the
+per-app `register-kuma-monitors` step. Configuration as code lives in
+`monitoring/notifications.yml` and `monitoring/monitor.yml` (per app).
+
+Kuma's REST API keys are scoped to push/metrics endpoints — monitor and
+notification CRUD goes through Socket.IO with a username + password.
+Create a dedicated `automation` user in Kuma (Settings → Users) and use
+its credentials below. Do not enable 2FA for that user.
+
+| Key | Description |
+|---|---|
+| `KUMA_URL` | Kuma base URL, e.g. `https://status.example.com` |
+| `KUMA_AUTOMATION_USER` | Username of the dedicated automation user |
+| `KUMA_AUTOMATION_PASSWORD` | Password for that user |
+| `DISCORD_WEBHOOK_URL` | Discord channel webhook (or replace with another notification provider) |
+
+All four are `exclude_from_env: true` — they're only consumed by
+workflows, never injected into runtime `.env` files.
+
 ### App-specific
 
 Apps live in their own repos with their own secrets schemas.
