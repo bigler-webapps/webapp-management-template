@@ -92,6 +92,14 @@ services:
       - ./uptime-kuma-data:/app/data
     networks:
       - proxy
+    # When Kuma monitors apps hosted on the SAME server, Docker's hairpin-NAT
+    # prevents the container from reaching the host's public IP. Add each
+    # monitored hostname as an extra_host mapping to the Traefik container so
+    # Kuma → Traefik → backend works locally. Adjust the IP if your Docker
+    # bridge subnet differs (`docker network inspect traefik_proxy`).
+    #
+    # extra_hosts:
+    #   - "yourapp.example.com:192.168.220.2"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.kuma.rule=Host(`${DOMAIN_KUMA}`)"
