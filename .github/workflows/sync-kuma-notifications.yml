@@ -41,7 +41,9 @@ jobs:
       - uses: bigler-webapps/workflow-templates/.github/actions/sync-kuma-notifications@main
         with:
           config_path: monitoring/notifications.yml
-          kuma_url: ${{ secrets.KUMA_URL }}
+          ssh_host: ${{ secrets.SSH_HOST }}
+          ssh_user: ${{ secrets.SSH_USER }}
+          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
           kuma_user: ${{ secrets.KUMA_AUTOMATION_USER }}
           kuma_password: ${{ secrets.KUMA_AUTOMATION_PASSWORD }}
           discord_webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
