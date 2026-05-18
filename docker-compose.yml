@@ -7,7 +7,14 @@
 #   - Two docker-socket-proxy instances (one for Traefik, one for Watchtower)
 #
 # NOT included (intentionally minimal — add later if you adopt them):
-#   - WireGuard (replaced by Tailscale on host; see ARCHITECTURE.md)
+#   - WireGuard (replaced by Tailscale on host; see ARCHITECTURE.md).
+#     If you do add WireGuard back: serve split-DNS to clients via CoreDNS
+#     inside the linuxserver/wireguard container — mount a Corefile that
+#     resolves VPN-only hostnames (e.g. Traefik dashboard, Uptime Kuma) to
+#     the Traefik container's internal Docker IP. This avoids Docker's
+#     hairpin-NAT limitation when clients route the host's public IP
+#     through the tunnel. See webapp-management's docker-compose.yml and
+#     wireguard/Corefile for the pattern.
 #   - traefik-cert-dumper (only needed if your apps consume Traefik-issued certs)
 #   - vpn-only middleware (depends on VPN being set up)
 #
