@@ -113,7 +113,7 @@ One command does the bulk-push from `secrets.values.yaml` to GitHub:
 
 ```bash
 sync-secrets \
-  --target github \
+  --server \
   --secret-source yaml \
   --values-file secrets.values.yaml \
   --secret-target production
@@ -191,7 +191,7 @@ Set up Backblaze B2:
    losing access to all backups)
 6. Push to GitHub:
    ```bash
-   sync-secrets --target github --secret-source yaml \
+   sync-secrets --server --secret-source yaml \
      --values-file secrets.values.yaml --secret-target production
    ```
 

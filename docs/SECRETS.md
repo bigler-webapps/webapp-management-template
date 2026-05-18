@@ -67,7 +67,7 @@ Pro Target eine Sektion. Keys müssen mit denen aus `secrets.yaml` übereinstimm
 
 ```bash
 sync-secrets \
-  --target github \
+  --server \
   --secret-source yaml \
   --values-file secrets.values.yaml \
   --secret-target production
@@ -93,7 +93,7 @@ secret_inputs:
 Then just:
 
 ```bash
-sync-secrets --target github
+sync-secrets --server
 ```
 
 ## Required secrets per environment
@@ -156,7 +156,7 @@ Whichever path: test the restore once. Lost-`RESTIC_PASSWORD` = unrecoverable ba
 
 1. Add the key to `secrets.yaml` (just `KEY_NAME: {}`)
 2. Add the value to each target in `secrets.values.yaml`
-3. Run `sync-secrets --target github --secret-source yaml --values-file secrets.values.yaml --secret-target <target>`
+3. Run `sync-secrets --server --secret-source yaml --values-file secrets.values.yaml --secret-target <target>`
 4. Done — value is now in GitHub Environment Secrets
 
 ## Removing a secret

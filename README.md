@@ -55,7 +55,7 @@ See [docs/ONBOARDING.md](docs/ONBOARDING.md) for the detailed version with examp
    (e.g. `production`)
 7. **Push secrets to GitHub** with one command:
    ```bash
-   sync-secrets --target github --secret-source yaml \
+   sync-secrets --server --secret-source yaml \
      --values-file secrets.values.yaml --secret-target production
    ```
 8. **Manually trigger `provision-server.yml`**, then `deploy-traefik.yml`
@@ -89,7 +89,7 @@ uses: bigler-webapps/workflow-templates/.github/actions/deploy-traefik@<40-char-
 One command pushes values to GitHub Environment Secrets:
 
 ```bash
-sync-secrets --target github --secret-source yaml \
+sync-secrets --server --secret-source yaml \
   --values-file secrets.values.yaml --secret-target production
 ```
 
