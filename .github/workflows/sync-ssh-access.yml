@@ -19,10 +19,6 @@ on:
         required: false
         type: string
         default: "deploy"
-      extra_deploy_public_key:
-        description: "Optional single public key appended to deploy authorized_keys"
-        required: false
-        type: string
       preserve_existing_root_keys:
         description: "Keep existing root keys instead of replacing them"
         required: false
@@ -44,5 +40,4 @@ jobs:
           ssh_host: ${{ secrets.SSH_HOST }}
           ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY_ROOT }}
           deploy_user: ${{ inputs.deploy_user }}
-          extra_deploy_public_key: ${{ inputs.extra_deploy_public_key }}
           preserve_existing_root_keys: ${{ inputs.preserve_existing_root_keys }}

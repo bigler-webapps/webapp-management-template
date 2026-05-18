@@ -22,10 +22,6 @@ on:
         description: "User that will own app deployments (default: from inventory or 'deploy')"
         required: false
         type: string
-      infra_public_key:
-        description: "Optional infrastructure public key to append to deploy authorized_keys"
-        required: false
-        type: string
 
 jobs:
   provision:
@@ -45,4 +41,3 @@ jobs:
           ssh_host: ${{ secrets.SSH_HOST }}
           ssh_private_key_root: ${{ secrets.SSH_PRIVATE_KEY_ROOT }}
           deploy_user: ${{ inputs.deploy_user }}
-          infra_public_key: ${{ inputs.infra_public_key }}
