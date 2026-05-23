@@ -109,22 +109,10 @@ services:
       # If you adopt VPN later, add `vpn-only@file` to restrict.
       - "traefik.http.routers.kuma.middlewares=sec-headers"
       - "traefik.http.services.kuma.loadbalancer.server.port=3001"
-      - "com.centurylinklabs.watchtower.enable=true"
 
-  watchtower:
-    image: containrrr/watchtower:1.7.1
-    container_name: watchtower
-    restart: unless-stopped
-    environment:
-      DOCKER_HOST: tcp://docker-socket-proxy-watchtower:2375
-      DOCKER_API_VERSION: "1.44"
-      WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_INCLUDE_RESTARTING: "true"
-      WATCHTOWER_LABEL_ENABLE: "true"
-      WATCHTOWER_SCHEDULE: "0 0 3 * * *"
-      WATCHTOWER_MONITOR_ONLY: "true"
-    networks:
-      - socket_proxy
+  # Watchtower has been retired. Image updates are driven by Renovate (pin-bump
+  # PRs against this repo) rather than by host-side auto-pulls. With pinned
+  # tags + Renovate the previous watchtower setup was a no-op anyway.
 
   docker-socket-proxy-traefik:
     image: tecnativa/docker-socket-proxy:0.3
@@ -139,25 +127,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - proxy
-      - socket_proxy
-
-  docker-socket-proxy-watchtower:
-    image: tecnativa/docker-socket-proxy:0.3
-    container_name: docker-socket-proxy-watchtower
-    restart: unless-stopped
-    environment:
-      CONTAINERS: "1"
-      IMAGES: "1"
-      NETWORKS: "1"
-      INFO: "1"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - socket_proxy
 
 networks:
   proxy:
     name: traefik_proxy
     external: true
-  socket_proxy:
-    name: socket_proxy

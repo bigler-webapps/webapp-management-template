@@ -32,7 +32,7 @@ are public OSS that you consume. You operate your own infrastructure end-to-end.
   └─ restore.yml              #   manual restore, production protected
 access/                   # Managed public keys per role
 inventory/                # Target inventory (example file)
-docker-compose.yml        # Traefik stack (proxy, kuma, watchtower)
+docker-compose.yml        # Traefik stack (proxy, kuma)
 dynamic/                  # Traefik dynamic config (middlewares)
 docs/                     # Detailed onboarding + reference
 secrets.yaml              # Secret schema (committed)
