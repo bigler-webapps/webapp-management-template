@@ -1,6 +1,8 @@
 # Traefik dynamic middlewares
 #
 # Loaded by the file provider — changes here are picked up at runtime.
+# This is the TEMPLATE — kept parity-aligned with the platform reference
+# at `bigler-webapps/webapp-management/dynamic/middlewares.yml`.
 
 http:
   middlewares:
@@ -12,8 +14,80 @@ http:
         burst: 10
         period: 1m
 
-    # OPTIONAL — uncomment and adapt CIDR if you adopt a VPN (Tailscale/WireGuard).
+    # ---------------------------------------------------------------------
+    # /media/ headers (S14 — Stored-XSS-Prevention)
+    # ---------------------------------------------------------------------
+
+    # Default headers for /media/: force download + disable MIME-sniffing.
+    # Attach via per-app router on PathPrefix(`/media`).
+    media-safe-headers:
+      headers:
+        contentTypeNosniff: true
+        customResponseHeaders:
+          Content-Disposition: "attachment"
+
+    # Inline override — SAFE ONLY for image/png|jpeg|webp|gif sub-paths.
+    # NEVER attach to routes that serve SVG, PDF, HTML, or any executable content.
+    # The middleware itself does not filter by MIME; the per-app router decides.
+    media-inline-images:
+      headers:
+        contentTypeNosniff: true
+        customResponseHeaders:
+          Content-Disposition: "inline"
+
+    # Generic inline-rendering for /media/ paths that need iframe/object preview
+    # (e.g. PDF receipts). Safer than attachment if and only if SafeFileField
+    # enforces strict allowed_mimes upstream so that the file content is
+    # guaranteed to match one of the known-safe MIMEs.
+    media-inline:
+      headers:
+        contentTypeNosniff: true
+        customResponseHeaders:
+          Content-Disposition: "inline"
+
+    # ---------------------------------------------------------------------
+    # Body-size limits (S35 — DoS via large bodies)
+    # ---------------------------------------------------------------------
+
+    body-limit-default:
+      buffering:
+        maxRequestBodyBytes: 2097152      # 2 MiB
+
+    body-limit-upload:
+      buffering:
+        maxRequestBodyBytes: 10485760     # 10 MiB
+
+    body-limit-large:
+      buffering:
+        maxRequestBodyBytes: 104857600    # 100 MiB
+
+    # ---------------------------------------------------------------------
+    # Rate limits (S35 — Brute-force + Flood mitigation)
+    # ---------------------------------------------------------------------
+    # Rate limits omit explicit sourceCriterion: at edge Traefik with no
+    # upstream proxy, the default (connection remote address) is the real
+    # client IP. Setting ipStrategy.depth>0 would misread the single-entry
+    # XFF list.
+
+    auth-ratelimit:
+      rateLimit:
+        average: 60
+        burst: 30
+        period: 1m
+
+    upload-ratelimit:
+      rateLimit:
+        average: 60
+        burst: 30
+        period: 1m
+
+    # ---------------------------------------------------------------------
+    # Optional middlewares (uncomment if your deployment uses them)
+    # ---------------------------------------------------------------------
+
+    # vpn-only — uncomment and adapt CIDR if you adopt a VPN (Tailscale/WireGuard).
     # Then add `vpn-only@file` to your route middlewares list.
+    # NOTE: webapp-management retired this in favour of Cloudflare Access (2026-05-23).
     # vpn-only:
     #   ipWhiteList:
     #     sourceRange:

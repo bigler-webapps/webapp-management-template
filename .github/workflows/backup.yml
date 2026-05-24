@@ -37,7 +37,7 @@ jobs:
           path: ops-scripts
 
       - name: Run backup
-        uses: bigler-webapps/workflow-templates/.github/actions/backup@main
+        uses: bigler-webapps/workflow-templates/.github/actions/backup@v2.0.0
         with:
           target: ${{ inputs.target || 'production' }}
           sync_staging: ${{ inputs.sync_staging || false }}
