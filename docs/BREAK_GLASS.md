@@ -27,13 +27,30 @@ If the server is not booting:
 
 **Symptom:** Tailscale-only SSH is gone, but you have a public-IP fallback.
 
+> **Pre-condition note**: this scenario only applies to tenants that completed
+> the public-SSH lockdown described in
+> [webapp-template/TENANT_ONBOARDING_GUIDE.md](https://github.com/bigler-webapps/webapp-template/blob/main/TENANT_ONBOARDING_GUIDE.md)
+> Section 10.2. If the tenant is still inside the 7-day soak window (Section
+> 10.1), `tcp/22` is still open from the public internet — just SSH normally
+> from a stable IP and skip to Tailscale-diagnosis (step 3 below). Do **NOT**
+> close 22 again until the soak gates pass.
+
 **Recovery:**
 
 1. If you kept a public-IP allowlist (`tcp/22 from your-static-ip`), SSH directly
-2. If you locked SSH to Tailscale-only:
+2. If you locked SSH to Tailscale-only (post-soak per Section 10.2):
    - Use Hetzner Rescue Console (Scenario 1)
-   - From rescue: `ufw allow ssh` to temporarily reopen
-   - Investigate Tailscale: `systemctl status tailscaled`, `tailscale status`
+   - From rescue: `ufw allow 22/tcp` to temporarily reopen
+   - SSH in normally from any stable network
+3. Investigate Tailscale: `systemctl status tailscaled`, `tailscale status`,
+   `tailscale debug netcheck`, check Tailscale admin → ACL + Devices for
+   token-expiry or ACL drift
+4. Once Tailscale-SSH works again, **re-lock public SSH**:
+   ```bash
+   ssh deploy@<tenant-slug>-prod.tail990d7f.ts.net "sudo ufw delete allow 22/tcp && sudo ufw status verbose"
+   ```
+   Then verify from a non-Tailscale network that `tcp/22` is closed again.
+   Do not skip this — re-lock is part of the recovery, not a follow-up task.
 
 ## Scenario 3: Cloudflare account locked or DNS broken
 

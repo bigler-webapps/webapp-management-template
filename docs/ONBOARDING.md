@@ -150,6 +150,16 @@ The workflow takes ~5 minutes. Watch the logs. Expected steps:
 - fail2ban setup
 - Directory structure under `/srv/`
 
+> **About `22/tcp` staying open**: by design, `provision-server.yml` leaves
+> public-internet SSH (`22/tcp`) open after provisioning. This is the
+> **break-glass path** while Tailscale-SSH is unproven on the new server.
+> Do **NOT** close `22/tcp` until the per-tenant 7-day Tailscale-SSH soak
+> period has passed — see
+> [webapp-template/TENANT_ONBOARDING_GUIDE.md](https://github.com/bigler-webapps/webapp-template/blob/main/TENANT_ONBOARDING_GUIDE.md)
+> Section 10.1 (soak criteria) and 10.2 (lockdown procedure). If you close
+> it too early and Tailscale fails, recovery is via the Hetzner Rescue
+> Console only — slow and stressful.
+
 **If something fails:** SSH into the server with your root key and investigate.
 Don't re-run blind; understand what happened.
 
