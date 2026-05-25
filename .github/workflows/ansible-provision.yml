@@ -1,0 +1,136 @@
+name: Ansible Provision
+
+# Canonical provision-AND-update path (2026-05-24+).
+#
+# `site.yml` is idempotent — running it against an existing server applies
+# any new package / sysctl / config drift and is a safe no-op on
+# already-applied state. This workflow therefore covers both fresh-host
+# bootstrap AND incremental updates; the legacy `update-server.yml` workflow
+# (deprecated 2026-05-24) is superseded by re-running this workflow.
+#
+# See SECURITY_FINDINGS.md S182 for the deprecation rationale (root-SSH
+# removal from the `tag:ci-deploy` ACL).
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Ansible inventory limit (host or group, e.g. 'staging' or 'stage')"
+        required: true
+        type: environment
+      extra_vars:
+        description: "Ansible extra-vars (single-space-separated 'key=value' pairs, e.g. 'tailscale_force_up=true')"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    defaults:
+      run:
+        working-directory: ansible
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Validate target input
+        working-directory: .
+        env:
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$INPUT_TARGET" | grep -qE '^[a-zA-Z0-9_-]+$'; then
+            echo "❌ Invalid 'target' input"
+            exit 1
+          fi
+          echo "✅ Target validated: $INPUT_TARGET"
+
+      # Validate extra_vars BEFORE installing tooling so a bad input fails
+      # fast and never reaches Ansible. Same env-var-quoting + strict-regex
+      # pattern as Validate-target-input above (S20 hardening).
+      - name: Validate extra_vars input
+        working-directory: .
+        env:
+          INPUT_EXTRA_VARS: ${{ inputs.extra_vars }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INPUT_EXTRA_VARS}" ]; then
+            echo "✅ extra_vars empty — skipping --extra-vars."
+            exit 0
+          fi
+          # Single-space-separated 'key=value' pairs. Keys must be
+          # ansible-compatible identifiers; values are restricted to
+          # alphanumerics plus `. _ -` (hyphen at position 0 in the class
+          # to avoid range-ambiguity for future editors).
+          if ! printf '%s' "$INPUT_EXTRA_VARS" | grep -qE '^([A-Za-z_][A-Za-z0-9_]*=[-A-Za-z0-9._]+)( [A-Za-z_][A-Za-z0-9_]*=[-A-Za-z0-9._]+)*$'; then
+            echo "❌ Invalid extra_vars (expected: single-space-separated 'key=value [key=value ...]')"
+            exit 1
+          fi
+          echo "✅ extra_vars validated: $INPUT_EXTRA_VARS"
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Ansible
+        run: pip install --no-cache-dir 'ansible-core>=2.16,<2.18'
+
+      - name: Install collection requirements
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Write SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY_ROOT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY}" ]; then
+            echo "❌ Secret SSH_PRIVATE_KEY_ROOT not set in environment '${{ inputs.target }}'."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_ansible
+          chmod 600 ~/.ssh/id_ansible
+
+      - name: Run Ansible playbook
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+          # Pass the target via env-var so the shell sees a quoted variable,
+          # not a textually-substituted GitHub expression — keeps the
+          # injection door closed even if the validation step above is
+          # removed or reordered in the future.
+          LIMIT_TARGET: ${{ inputs.target }}
+          # Workflow-input passthrough for one-shot ansible extra-vars
+          # (e.g. `tailscale_force_up=true` after changing tailscale-up
+          # flags). Same env-var-quoting + regex validation pattern as
+          # LIMIT_TARGET — see S20 hardening notes in
+          # provision-server.yml and sync-ssh-access.yml.
+          EXTRA_VARS: ${{ inputs.extra_vars }}
+          # Tailscale auth-key consumed by the biglerconsult.infra.tailscale
+          # role via `lookup('env', 'TAILSCALE_AUTH_KEY')` in group_vars.
+          # Only the `staging` environment is expected to have this secret
+          # populated. For other targets where the secret is absent the
+          # expression evaluates to empty, the role skips `tailscale up`,
+          # and the host is NOT registered in the tailnet — that is the
+          # safe fallback. CAVEAT: do not duplicate this secret into other
+          # environments (e.g. main-prod) without intent; doing so would
+          # auto-register that host into the same tailnet on the next run.
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          set -euo pipefail
+          # Input was already strict-validated in the dedicated
+          # `Validate extra_vars input` step above (fail-fast before
+          # tooling install). This block only assembles the optional
+          # --extra-vars argv pair.
+          EXTRA_VARS_ARG=()
+          if [ -n "${EXTRA_VARS}" ]; then
+            EXTRA_VARS_ARG=( --extra-vars "$EXTRA_VARS" )
+          fi
+          ansible-playbook site.yml \
+            --inventory inventory/hosts.yml \
+            --limit "$LIMIT_TARGET" \
+            "${EXTRA_VARS_ARG[@]}" \
+            --private-key ~/.ssh/id_ansible

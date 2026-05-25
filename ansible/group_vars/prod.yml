@@ -1,0 +1,33 @@
+---
+# Tailscale config for prod hosts.
+#
+# Auth-key comes from the GitHub Environment Secret TAILSCALE_AUTH_KEY
+# of the active target (e.g. `innoservice-prod`) — sync-secrets pushes
+# it from Proton, the workflow exposes it as env var, this lookup
+# reads it on the controller.
+tailscale_authkey: "{{ lookup('env', 'TAILSCALE_AUTH_KEY') }}"
+
+# Tag the host announces in the tailnet. Must be declared in the
+# tailnet ACL `tagOwners`, and the auth-key must be generated
+# pre-authorized for the same tag.
+#
+# OPERATOR NOTE: tag changes require `tailscale_force_up: true` for
+# one playbook run (the role skips `up` on already-running hosts).
+tailscale_advertise_tags:
+  - tag:server-prod
+
+# Override the role default (port 22 only). prod hosts run the web stack
+# (Traefik) and need 80/443 reachable for direct-A app subdomains and any
+# legacy non-Tunnel paths. Tightening to tailscale0-only is a follow-up
+# after the per-tenant ≥7-day Tailscale-SSH soak — see
+# bigler-webapps/webapp-template/TENANT_ONBOARDING_GUIDE.md Section 10.
+ufw_allow_in:
+  - port: "22"
+    proto: tcp
+    comment: ssh
+  - port: "80"
+    proto: tcp
+    comment: http
+  - port: "443"
+    proto: tcp
+    comment: https

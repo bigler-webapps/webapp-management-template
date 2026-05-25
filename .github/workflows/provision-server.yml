@@ -1,5 +1,12 @@
 name: Provision Server
 
+# DEPRECATED 2026-05-24 — use `ansible-provision.yml` instead.
+#
+# `ansible-provision.yml` invokes the idempotent Ansible playbook
+# `ansible/site.yml`, which covers fresh-host bootstrap AND incremental
+# updates in one canonical path. This legacy workflow is kept only for
+# repos that have not yet adopted the Ansible role-set.
+#
 # Bootstrap a server (packages, Docker, deploy user, dirs, firewall, fail2ban).
 # Runs as root via SSH_PRIVATE_KEY_ROOT.
 #

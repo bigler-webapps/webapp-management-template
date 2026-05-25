@@ -1,5 +1,12 @@
 name: Sync SSH Access
 
+# DEPRECATED 2026-05-24 — use `ansible-provision.yml` instead.
+#
+# Key-Sync is integrated into the canonical Ansible playbook's pre/post tasks
+# (see S182 / SECURITY_FINDINGS in the platform reference). Run
+# `ansible-provision.yml` against the target host and the keys converge
+# alongside the rest of server state.
+#
 # Syncs managed public keys from access/ to authorized_keys on the target server.
 # Reads root keys from access/root/*.pub and deploy keys from access/deploy/*.pub.
 
@@ -33,7 +40,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Sync SSH access keys
-        uses: bigler-webapps/workflow-templates/.github/actions/sync-ssh-access@v2.0.0
+        uses: bigler-webapps/workflow-templates/.github/actions/sync-ssh-access@v2.0.3
         with:
           target: ${{ inputs.target }}
           target_host: ${{ inputs.target_host }}

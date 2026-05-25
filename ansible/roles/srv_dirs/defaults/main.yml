@@ -1,0 +1,3 @@
+---
+srv_dirs_packages:
+  - restic

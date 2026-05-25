@@ -1,5 +1,11 @@
 name: Update Server
 
+# DEPRECATED 2026-05-24 — use `ansible-provision.yml` instead.
+#
+# `ansible/site.yml` is idempotent — running it against an existing host is
+# the canonical "update" path. This legacy workflow is kept only for repos
+# that have not yet adopted the Ansible role-set.
+#
 # Incremental, idempotent re-apply of server tuning and base tooling on an
 # already-provisioned host. Safe to run on production — does NOT touch UFW,
 # fail2ban core config, Docker, sudoers, or users.
@@ -28,7 +34,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Apply incremental server updates
-        uses: bigler-webapps/workflow-templates/.github/actions/update-server@v2.0.0
+        uses: bigler-webapps/workflow-templates/.github/actions/update-server@v2.0.3
         with:
           target: ${{ inputs.target }}
           target_host: ${{ inputs.server_ip }}

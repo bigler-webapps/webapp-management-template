@@ -1,0 +1,28 @@
+---
+# Tailscale config for stage hosts.
+#
+# Auth-key comes from a GitHub Environment Secret (TAILSCALE_AUTH_KEY)
+# that the workflow exposes as an env var on the playbook step. The
+# lookup runs on the Ansible controller (= CI runner), so the secret
+# never has to flow through inventory files or CLI -e flags.
+#
+# An empty value means the role installs Tailscale but skips
+# `tailscale up` — the host will NOT register in the tailnet. That is
+# the safe fallback when the env var is unset; if you expect the host
+# to join the tailnet and it does not, double-check that the
+# `staging` GitHub Environment has TAILSCALE_AUTH_KEY populated
+# (run `sync-secrets --server --secret-target staging`).
+tailscale_authkey: "{{ lookup('env', 'TAILSCALE_AUTH_KEY') }}"
+
+# Tag the host announces. Must be pre-declared in the tailnet ACL
+# under `tagOwners`, and the auth-key must be generated pre-authorized
+# for the same tag.
+#
+# OPERATOR NOTE: the role skips `tailscale up` on re-runs when the
+# daemon is already `Running`. Changing this list, the hostname, or
+# the route lists therefore does NOT converge on the next play run.
+# After such a change, override `tailscale_force_up: true` for one
+# playbook invocation (e.g. via `-e tailscale_force_up=true`) to
+# force a re-up with the new flags.
+tailscale_advertise_tags:
+  - tag:server-stage

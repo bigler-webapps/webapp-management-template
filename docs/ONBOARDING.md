@@ -133,22 +133,31 @@ The full secret reference (which keys are required, formats, rotation) is in
 
 ## Step 7 — Provision your server
 
-This installs Docker, fail2ban, UFW, creates the deploy user, and sets up
-directories. It runs as root via `SSH_PRIVATE_KEY_ROOT`.
+The canonical provisioning path is `ansible-provision.yml`, which runs the
+idempotent `ansible/site.yml` playbook. It covers BOTH fresh-host bootstrap
+AND incremental updates — running it again later applies any added role/var
+without re-doing finished steps.
 
-1. **Read the warning** at the top of `.github/workflows/provision-server.yml`
-2. In GitHub: **Actions → Provision Server → Run workflow**
-3. Select environment `production`
+1. Ensure `ansible/inventory/hosts.yml` lists your host(s) and a matching
+   `ansible/host_vars/<host>.yml` exists with `ansible_host` + `ansible_user`
+2. In GitHub: **Actions → Ansible Provision → Run workflow**
+3. Set `target` = your host (matches inventory + GitHub Environment name)
 4. Click **Run workflow**
 
-The workflow takes ~5 minutes. Watch the logs. Expected steps:
+The workflow takes ~3-5 minutes for a fresh host. Expected role activity:
 
 - apt update + upgrade
 - Docker installation
+- Tailscale install + auth-key registration (`tailscale up --ssh`)
+- cloudflared install + tunnel-token registration
 - Deploy user creation
-- UFW configuration (deny incoming, allow 22/80/443)
+- UFW configuration (deny incoming, allow 22/80/443 — see "About 22/tcp" below)
 - fail2ban setup
 - Directory structure under `/srv/`
+
+The legacy `provision-server.yml` + `sync-ssh-access.yml` + `update-server.yml`
+workflows are DEPRECATED — they remain in the template only for repos that
+have not yet adopted the Ansible role-set.
 
 > **About `22/tcp` staying open**: by design, `provision-server.yml` leaves
 > public-internet SSH (`22/tcp`) open after provisioning. This is the

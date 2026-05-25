@@ -62,7 +62,7 @@ jobs:
           path: ops-scripts
 
       - name: Run restore
-        uses: bigler-webapps/workflow-templates/.github/actions/restore@v2.0.0
+        uses: bigler-webapps/workflow-templates/.github/actions/restore@v2.0.3
         with:
           target: ${{ inputs.target }}
           app_name: ${{ inputs.app_name }}

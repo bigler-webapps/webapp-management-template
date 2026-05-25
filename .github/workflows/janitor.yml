@@ -31,7 +31,7 @@ jobs:
           path: ops-scripts
 
       - name: Run janitor
-        uses: bigler-webapps/workflow-templates/.github/actions/janitor@v2.0.0
+        uses: bigler-webapps/workflow-templates/.github/actions/janitor@v2.0.3
         with:
           target: ${{ inputs.target || 'production' }}
           ssh_host: ${{ secrets.SSH_HOST }}

@@ -1,0 +1,31 @@
+---
+ansible_python_interpreter: /usr/bin/python3
+
+# Deploy user the tenant playbook provisions on every host.
+deploy_user_name: deploy
+
+# Tailscale SSH (cert-based, separate from system sshd).
+#
+# Switches ON the Tailscale-managed SSH listener on every host. When the
+# tailnet ACL `ssh:`-section authorizes tag:ci-deploy → tag:server-* as
+# `deploy`, GitHub-Actions-Runners can `tailscale ssh deploy@<host>`
+# without a private key — auth is Tailscale-identity-based.
+#
+# System OpenSSH on :22 stays alongside as the break-glass / legacy path
+# until UFW closure (S32). Both listeners coexist; Tailscale-SSH only
+# intercepts connections coming over the Tailnet.
+#
+# OPERATOR NOTE: this is a `tailscale up`-flag change. The role skips
+# `tailscale up` on already-running hosts unless you pass
+# `tailscale_force_up=true` as an extra-var on the next run. Otherwise
+# the live state never converges to --ssh=true.
+#
+# EDGE CASE: any host whose Tailscale daemon is NOT in BackendState
+# `Running` at play time (freshly re-provisioned, post-reboot before
+# tailscaled converged, network partition) will hit the role's `up`
+# branch on the *next* ansible-provision run unconditionally — i.e.
+# `--ssh=true --reset` applies without needing tailscale_force_up.
+# That is the safe direction (we want --ssh on everywhere), just
+# noting it so an operator does not mistake it for an unexpected
+# state change.
+tailscale_ssh: true

@@ -1,0 +1,153 @@
+---
+- name: Provision tenant /srv directory tree (requires root)
+  become: true
+  block:
+    - name: Install backup tooling
+      ansible.builtin.apt:
+        name: "{{ srv_dirs_packages }}"
+        state: present
+
+    - name: Ensure /srv/apps exists with shared deploy access
+      ansible.builtin.file:
+        path: /srv/apps
+        state: directory
+        owner: root
+        group: "{{ deploy_user_name }}"
+        mode: "2775"
+
+    - name: Set ACL on /srv/apps for deploy group (current files)
+      ansible.posix.acl:
+        path: /srv/apps
+        etype: group
+        entity: "{{ deploy_user_name }}"
+        permissions: rwx
+        state: present
+
+    - name: Set default ACL on /srv/apps for deploy group (new files inherit)
+      ansible.posix.acl:
+        path: /srv/apps
+        etype: group
+        entity: "{{ deploy_user_name }}"
+        permissions: rwx
+        default: true
+        state: present
+
+    - name: Ensure /srv/infrastructure/webapp-management exists
+      ansible.builtin.file:
+        path: /srv/infrastructure/webapp-management
+        state: directory
+        owner: "{{ deploy_user_name }}"
+        group: "{{ deploy_user_name }}"
+        mode: "2775"
+
+    # Heal ownership drift: deploy-traefik rsyncs into this tree from CI
+    # using SSH as the deploy user. If anything (manual SSH as root, a
+    # docker mount race) leaves a sub-file owned by root, the next rsync
+    # gets "Permission denied" and deploy-traefik fails. Recursively
+    # re-asserting deploy:deploy ownership on every Ansible run heals
+    # such drift. `mode` is intentionally omitted so file modes stay as
+    # they were set by their writer.
+    - name: Heal /srv/infrastructure/webapp-management ownership recursively
+      ansible.builtin.file:
+        path: /srv/infrastructure/webapp-management
+        state: directory
+        owner: "{{ deploy_user_name }}"
+        group: "{{ deploy_user_name }}"
+        recurse: true
+
+    # Belt + suspenders: ACL g+rwx fuer deploy-Gruppe auf
+    # /srv/infrastructure/webapp-management. Falls trotz Heal-Task spaeter
+    # mal ein root-owned File reinkommt (z.B. via "docker run --user root"
+    # mit Bind-Mount-Create oder manuelles root-rsync), kann deploy es per
+    # Group-ACL trotzdem ueberschreiben - deploy-traefik laeuft also weiter,
+    # statt mit "Permission denied" auf mkstemp temp-Files abzubrechen.
+    # Default-ACL sorgt fuer Vererbung auf neue Files. Analog zum
+    # /srv/apps Pattern oben.
+    - name: Set ACL on /srv/infrastructure/webapp-management for deploy group (current files)
+      ansible.posix.acl:
+        path: /srv/infrastructure/webapp-management
+        etype: group
+        entity: "{{ deploy_user_name }}"
+        permissions: rwx
+        recursive: true
+        state: present
+
+    - name: Set default ACL on /srv/infrastructure/webapp-management for deploy group (new files inherit)
+      ansible.posix.acl:
+        path: /srv/infrastructure/webapp-management
+        etype: group
+        entity: "{{ deploy_user_name }}"
+        permissions: rwx
+        default: true
+        recursive: true
+        state: present
+
+    # S22 — acme.json permission-recurrence guard.
+    #
+    # Traefik refuses to load the ACME certResolver if /acme.json has any
+    # permissions broader than 0600 ("permissions 670 for /acme.json are too
+    # open, please use 600"). The recursive ACL apply above sets group=rwx
+    # on every file under /srv/infrastructure/webapp-management/, including
+    # acme.json, which manifests as mode 0670 via ACL mask. Traefik then
+    # disables myresolver, and every router with `tls.certresolver=myresolver`
+    # logs "uses a nonexistent certificate resolver" — so LE-certs never
+    # get served and SNI handshakes for those hostnames fail with TLS
+    # alert 112.
+    #
+    # Fix: after the recursive ACL apply, force acme.json (and only that
+    # file) back to mode 0600 + remove the deploy group ACL on it. This
+    # is idempotent and only acts when the file exists.
+    - name: S22 — check if acme.json exists
+      ansible.builtin.stat:
+        path: /srv/infrastructure/webapp-management/acme.json
+      register: acme_json_stat
+
+    - name: S22 — remove group ACL on acme.json (drops 0670 → 0600 effective)
+      ansible.posix.acl:
+        path: /srv/infrastructure/webapp-management/acme.json
+        etype: group
+        entity: "{{ deploy_user_name }}"
+        state: absent
+      when: acme_json_stat.stat.exists
+
+    - name: S22 — force acme.json mode 0600 (Traefik refuses otherwise)
+      ansible.builtin.file:
+        path: /srv/infrastructure/webapp-management/acme.json
+        state: file
+        owner: "{{ deploy_user_name }}"
+        group: "{{ deploy_user_name }}"
+        mode: "0600"
+      when: acme_json_stat.stat.exists
+
+    # wireguard subdir task retired 2026-05-23 — WG container removed.
+
+    - name: Ensure /srv/infrastructure/ops-scripts exists
+      ansible.builtin.file:
+        path: /srv/infrastructure/ops-scripts
+        state: directory
+        owner: "{{ deploy_user_name }}"
+        group: "{{ deploy_user_name }}"
+
+    - name: Ensure /srv/backups root exists
+      ansible.builtin.file:
+        path: /srv/backups
+        state: directory
+        owner: "{{ deploy_user_name }}"
+        group: "{{ deploy_user_name }}"
+        mode: "0755"
+
+    - name: Ensure /srv/backups/db-dumps exists with private mode
+      ansible.builtin.file:
+        path: /srv/backups/db-dumps
+        state: directory
+        owner: "{{ deploy_user_name }}"
+        group: "{{ deploy_user_name }}"
+        mode: "0700"
+
+    - name: Ensure /srv/backups/restic_v2 exists with private mode
+      ansible.builtin.file:
+        path: /srv/backups/restic_v2
+        state: directory
+        owner: "{{ deploy_user_name }}"
+        group: "{{ deploy_user_name }}"
+        mode: "0700"

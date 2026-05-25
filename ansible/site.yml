@@ -1,0 +1,48 @@
+---
+- name: Provision Ansible-managed servers
+  hosts: all
+  gather_facts: true
+
+  pre_tasks:
+    # Read every committed deploy/infrastructure pubkey and build the
+    # authorized_keys list that the deploy_user role consumes. Mirrors
+    # the legacy sync-ssh-access composite (which globs the same paths).
+    - name: Build deploy_user_authorized_keys from access/{deploy,infrastructure}/*.pub
+      ansible.builtin.set_fact:
+        deploy_user_authorized_keys: >-
+          {{ deploy_user_authorized_keys | default([])
+             + [lookup('file', item) | trim] }}
+      loop: >-
+        {{ query('ansible.builtin.fileglob', playbook_dir + '/../access/deploy/*.pub')
+           + query('ansible.builtin.fileglob', playbook_dir + '/../access/infrastructure/*.pub') }}
+      become: false
+
+  roles:
+    - biglerconsult.infra.base
+    - biglerconsult.infra.docker
+    - biglerconsult.infra.deploy_user
+    - biglerconsult.infra.ufw
+    - biglerconsult.infra.fail2ban
+    - biglerconsult.infra.tailscale
+    - srv_dirs
+
+  post_tasks:
+    # Append committed root pubkeys. Uses exclusive=false so the bootstrap
+    # keys (Hetzner-UI-injected pubkey and the CI root key already on the
+    # host) are preserved alongside the managed access/root/*.pub set.
+    # The legacy sync-ssh-access composite REPLACES root authorized_keys;
+    # this playbook intentionally appends to avoid first-run SSH lockout.
+    #
+    # OPERATOR WARNING: do not switch to exclusive=true until the CI key
+    # currently used by the GitHub Actions workflow
+    # (secret SSH_PRIVATE_KEY_ROOT) is verified to match a pubkey present
+    # in access/root/. Otherwise the next playbook run would remove the
+    # CI's own login path and lock the workflow out permanently.
+    - name: Sync root authorized_keys from access/root/*.pub
+      become: true
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ lookup('file', item) | trim }}"
+        state: present
+        exclusive: false
+      loop: "{{ query('ansible.builtin.fileglob', playbook_dir + '/../access/root/*.pub') }}"

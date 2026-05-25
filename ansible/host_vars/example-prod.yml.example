@@ -1,0 +1,9 @@
+---
+# Example host_vars — rename to <hostname>.yml (matching inventory/hosts.yml)
+# after instantiating from this template.
+#
+# One file per host. Defines how Ansible reaches the host for the initial
+# (pre-Tailscale) bootstrap. Subsequent runs go via Tailscale (see
+# `tailscale_ssh: true` in group_vars/all.yml).
+ansible_host: 1.2.3.4
+ansible_user: root
