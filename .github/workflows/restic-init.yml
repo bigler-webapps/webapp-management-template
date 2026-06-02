@@ -1,0 +1,42 @@
+name: Restic Init
+
+# One-off: initialise the Restic B2 repository for a target. Uses the
+# target's GH-env-scoped B2 secrets so no value typing is needed.
+#
+# Idempotent — if the repo is already initialised, the workflow logs the
+# current state and exits 0 without writing anything.
+#
+# Intentionally NOT wired into backup.yml. Silent auto-init in the backup
+# path would mask misrouted-secret bugs (typoed RESTIC_REPO_B2 →
+# inadvertent empty-repo creation at the wrong path → corruption invisible
+# until restore time). Keep this an explicit operator action.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target GH environment / inventory target whose Restic repo to initialise.'
+        required: true
+        type: environment
+
+concurrency:
+  group: restic-init-${{ inputs.target }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  init:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    steps:
+      # Pinned to the workflow-templates commit that introduced the composite.
+      # Bump deliberately after re-review.
+      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restic-init@ffa5011e37353fdc1fe302e0f25da4ecfa0d4a5e
+        with:
+          target: ${{ inputs.target }}
+          restic_repo_b2: ${{ secrets.RESTIC_REPO_B2 }}
+          restic_password: ${{ secrets.RESTIC_PASSWORD }}
+          b2_key_id: ${{ secrets.B2_KEY_ID }}
+          b2_app_key: ${{ secrets.B2_APP_KEY }}

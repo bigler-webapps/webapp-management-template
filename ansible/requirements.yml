@@ -3,4 +3,4 @@ collections:
   - name: biglerconsult.infra
     source: git+https://github.com/bigler-webapps/workflow-templates.git#/ansible
     type: git
-    version: 2b5c1ba1cf894f34d4626a6d9dd8fd9ef044382f
+    version: 84bb13312df2da2e44e3747607377b8447089e2a

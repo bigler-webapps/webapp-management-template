@@ -1,0 +1,183 @@
+name: Restore Cross-Server
+
+# Manual cross-server restore. Validates inventory + DESTROY token, then
+# orchestrates source-export → dest-import via the composites in
+# YOUR_GITHUB_ORG/workflow-templates.
+#
+# Use cases:
+#   • one-shot app migrations (e.g. innoservice main-prod → innoservice-prod)
+#   • disaster-recovery restores between environments
+#   • manual triggering of the sync-staging pipeline for a single app
+#
+# For routine same-server restores (zip-file export, on-host staging sync), the
+# legacy restore.yml workflow is still the right tool.
+#
+# Architecture: matches backup.yml — direct composite calls, no cross-org
+# reusable workflow_call (which would block env-scoped secrets from flowing
+# into the called workflow). All logic lives in the composites; this file is
+# the choreography (preflight → source_export → dest_import).
+#
+# Prerequisites:
+#   • secrets.CROSS_SERVER_TRANSPORT_KEY set at repo level (see secrets.yaml)
+#   • both source and dest inventory targets carry the 'restore' role
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_target:
+        description: 'Source GitHub environment / inventory target (e.g. main-prod).'
+        required: true
+        type: environment
+      dest_target:
+        description: 'Destination GitHub environment / inventory target (e.g. staging).'
+        required: true
+        type: environment
+      app_name:
+        description: 'App name (must match compose project prefix, e.g. myapp).'
+        required: true
+        type: string
+      source_env:
+        description: 'Source compose env label (compose project: {app}_{source_env}).'
+        required: true
+        type: string
+        default: 'production'
+      dest_subtarget:
+        description: 'Destination compose env label (compose project: {app}_{dest_subtarget}).'
+        required: true
+        type: choice
+        default: 'staging'
+        options:
+          - staging
+          - production
+      snapshot_id:
+        description: 'Restic snapshot ID or "latest".'
+        required: false
+        default: 'latest'
+        type: string
+      auto_restart:
+        description: 'Run docker compose up -d on dest host after import.'
+        required: false
+        default: false
+        type: boolean
+      dest_compose_path:
+        description: 'Dest host absolute compose path (required if auto_restart=true).'
+        required: false
+        default: ''
+        type: string
+      confirm_destroy:
+        description: 'Type DESTROY to confirm a production-targeted restore.'
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: restore-xserver-${{ inputs.source_target }}-${{ inputs.dest_target }}-${{ inputs.app_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm production-targeted restore
+        if: ${{ inputs.dest_subtarget == 'production' }}
+        env:
+          CONFIRM: ${{ inputs.confirm_destroy }}
+          DEST_TARGET: ${{ inputs.dest_target }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "DESTROY" ]; then
+            echo "❌ dest_subtarget=production on '${DEST_TARGET}' requires confirm_destroy=DESTROY."
+            echo "   Restoring into a production DB drops and recreates it — type DESTROY in the input."
+            exit 1
+          fi
+          echo "✅ Production restore confirmed (DESTROY token provided)."
+
+      - name: Validate app_name and free-form inputs
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          SOURCE_ENV: ${{ inputs.source_env }}
+          SNAPSHOT_ID: ${{ inputs.snapshot_id }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$APP_NAME" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "❌ Invalid app_name"; exit 1; }
+          printf '%s' "$SOURCE_ENV" | grep -qE '^[a-zA-Z0-9_-]+$' || { echo "❌ Invalid source_env"; exit 1; }
+          printf '%s' "$SNAPSHOT_ID" | grep -qE '^(latest|[a-zA-Z0-9_-]+)$' || { echo "❌ Invalid snapshot_id"; exit 1; }
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Validate inventory targets
+        env:
+          SOURCE_TARGET: ${{ inputs.source_target }}
+          DEST_TARGET: ${{ inputs.dest_target }}
+        run: |
+          set -euo pipefail
+          if [ "$SOURCE_TARGET" = "$DEST_TARGET" ]; then
+            echo "❌ source_target and dest_target must differ"
+            exit 1
+          fi
+          python3 .github/scripts/resolve_inventory_targets.py --target "$SOURCE_TARGET" --require-role restore > /dev/null
+          python3 .github/scripts/resolve_inventory_targets.py --target "$DEST_TARGET" --require-role restore > /dev/null
+          echo "✅ Inventory check passed: source=$SOURCE_TARGET, dest=$DEST_TARGET, role=restore."
+
+  source_export:
+    needs: preflight
+    runs-on: ubuntu-latest
+    # Env-scoped B2/RESTIC secrets flow in via the source target's GH env.
+    environment: ${{ inputs.source_target }}
+    steps:
+      # restore-source-export does NOT SSH (pulls restic from B2 on the runner).
+      # No Tailnet inputs needed; safe to stay on the latest v1.x.
+      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-source-export@v2.0.3
+        with:
+          source_target: ${{ inputs.source_target }}
+          app_name: ${{ inputs.app_name }}
+          source_env: ${{ inputs.source_env }}
+          snapshot_id: ${{ inputs.snapshot_id }}
+          restic_repo_b2: ${{ secrets.RESTIC_REPO_B2 }}
+          restic_password: ${{ secrets.RESTIC_PASSWORD }}
+          b2_key_id: ${{ secrets.B2_KEY_ID }}
+          b2_app_key: ${{ secrets.B2_APP_KEY }}
+          transport_key: ${{ secrets.CROSS_SERVER_TRANSPORT_KEY }}
+
+  dest_import:
+    needs: source_export
+    runs-on: ubuntu-latest
+    # Env-scoped SSH secrets flow in via the dest target's GH env.
+    environment: ${{ inputs.dest_target }}
+    permissions:
+      # actions:write lets the composite delete the handoff artifact at end of run.
+      # contents:read is the default for the checkout step.
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout webapp-ops-scripts
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          repository: YOUR_GITHUB_ORG/webapp-ops-scripts
+          # Pinned to the webapp-ops-scripts commit that introduced
+          # dump-only / import-only modes. Bump deliberately after re-review.
+          ref: c47d6ba3e36497d28b96c867d8677aacb1a356cb
+          path: ops-scripts
+
+      # restore-dest-import SSHes to the dest server; Tailnet path active.
+      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-dest-import@v2.0.3
+        with:
+          dest_target: ${{ inputs.dest_target }}
+          app_name: ${{ inputs.app_name }}
+          dest_subtarget: ${{ inputs.dest_subtarget }}
+          auto_restart: ${{ inputs.auto_restart && 'true' || 'false' }}
+          dest_compose_path: ${{ inputs.dest_compose_path }}
+          # v2.0.0: Tailscale-SSH-only — no ssh_private_key.
+          ssh_host: ${{ inputs.dest_target }}.your-tailnet-domain
+          ssh_user: deploy
+          # Artifact name is generated deterministically by restore-source-export
+          # as xrestore-{run_id}-{run_attempt}-{source_target}-{app_name}.
+          artifact_name: xrestore-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.source_target }}-${{ inputs.app_name }}
+          transport_key: ${{ secrets.CROSS_SERVER_TRANSPORT_KEY }}
+          ops_scripts_path: ops-scripts
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts_oauth_secret: ${{ secrets.TS_OAUTH_SECRET }}

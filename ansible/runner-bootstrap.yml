@@ -1,0 +1,65 @@
+---
+# runner-bootstrap.yml — one-time, operator-run bootstrap for a NEW runner host.
+#
+# WHY a separate playbook (not site.yml):
+#   The autonomous CI path (site.yml `runners` play via ansible-provision) connects
+#   through the mgmt tailscaled's Tailscale-SSH. It therefore must NOT manage the
+#   mgmt daemon (the tailscale_mgmt role restarts it → kills CI's own connection
+#   and re-renders the unit). So mgmt setup + the `provision` user (the two things
+#   CI depends on) are established HERE, once, by the operator over the PUBLIC IP
+#   as root — where restarting the mgmt daemon does not break the connection.
+#
+# AFTER this runs, autonomous CI (ansible-provision, target=runners) takes over
+# for docker / ufw / fail2ban / github_runner — see site.yml `runners` play.
+#
+# RUN (from a Linux/WSL admin machine; the box must have your operator pubkey in
+# root's authorized_keys, and TAILSCALE_MGMT_AUTH_KEY must be in the shell env):
+#
+#   export TAILSCALE_MGMT_AUTH_KEY='tskey-auth-…'   # the ONLY secret needed here
+#   ansible-playbook runner-bootstrap.yml \
+#     --inventory inventory/hosts.yml \
+#     --limit <host> \
+#     -e ansible_user=root \              # NOT -u root: ansible_user (host_vars) overrides -u
+#     -e ansible_host=<public-ip>         # mgmt hostname does not exist yet on run 1
+#
+# Then verify: ssh root@<host>-mgmt.{{ tailnet_domain }} whoami  → root
+# Then run the autonomous CI: Actions → Ansible Provision → target=runners.
+#
+# See RUNNER_HOST_BOOTSTRAP.md for the full procedure.
+
+- name: Bootstrap runner host (operator-only — mgmt tailscale + provision user)
+  hosts: runners
+  gather_facts: true
+  become: true
+
+  roles:
+    - biglerconsult.infra.base
+    # Default tailscaled: install-only (tailscale_authkey="" in group_vars).
+    # tailscale_mgmt needs the binary present; it does NOT register the default
+    # daemon (that stays free for per-job tag:ci-deploy).
+    - biglerconsult.infra.tailscale
+    # `provision` user: CI (tag:ci-provision → tag:ci-runner-host) connects as
+    # this user and sudos via NOPASSWD:ALL. Must exist before CI can connect.
+    - role: biglerconsult.infra.deploy_user
+      vars:
+        deploy_user_name: provision
+        deploy_user_sudo_commands: ALL
+        deploy_user_sudoers_filename: 91-provision-full
+        deploy_user_additional_groups: []
+        deploy_user_authorized_keys: []
+    # mgmt tailscaled (second instance, persistent, tag:ci-runner-host, --ssh).
+    # This is the daemon CI later connects through — established ONCE here.
+    - biglerconsult.infra.tailscale_mgmt
+
+  post_tasks:
+    # Operator break-glass root keys (so autogroup:admin → tag:ci-runner-host as
+    # root and public-IP bootstrap keep working). exclusive=false preserves the
+    # initial bootstrap key.
+    - name: Sync root authorized_keys from access/root/*.pub
+      become: true
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ lookup('file', item) | trim }}"
+        state: present
+        exclusive: false
+      loop: "{{ query('ansible.builtin.fileglob', playbook_dir + '/../access/root/*.pub') }}"

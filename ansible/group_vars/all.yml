@@ -29,3 +29,7 @@ deploy_user_name: deploy
 # noting it so an operator does not mistake it for an unexpected
 # state change.
 tailscale_ssh: true
+
+# Loki/Promtail target: logs are shipped to the monitoring host over Tailscale.
+# tailnet_domain must be set in inventory per tenant (e.g. tail1234ab.ts.net).
+promtail_loki_host: "monitoring.{{ tailnet_domain }}"

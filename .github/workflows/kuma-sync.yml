@@ -1,0 +1,144 @@
+name: Kuma Monitor Sync
+
+# Central workflow that syncs ALL app monitors in ONE sequential Kuma session.
+# Replaces the per-app register-kuma-monitors step so concurrent deploys no
+# longer race over the single-threaded Kuma Socket.IO server.
+#
+# Runs automatically every 6 hours and can be dispatched manually with an
+# optional app_filter to limit the sync to specific apps.
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      app_filter:
+        description: 'Comma-separated app names to sync (empty = all apps)'
+        required: false
+        default: ''
+
+concurrency:
+  group: kuma-sync-monitors
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    env:
+      KUMA_URL: https://monitoring.your-tailnet-domain:8443
+      KUMA_AUTOMATION_USER: ${{ secrets.KUMA_AUTOMATION_USER }}
+      KUMA_AUTOMATION_PASSWORD: ${{ secrets.KUMA_AUTOMATION_PASSWORD }}
+
+    steps:
+      - name: Checkout webapp-management
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      # Short-lived installation token (contents:read) from the org GH App, so
+      # the cross-repo checkouts below can read the private workflow-templates +
+      # app repos. The default GITHUB_TOKEN is scoped to webapp-management only.
+      - name: Generate GitHub App token (cross-repo contents:read)
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2
+        with:
+          app-id: ${{ secrets.KUMA_SYNC_APP_ID }}
+          private-key: ${{ secrets.KUMA_SYNC_APP_PRIVATE_KEY }}
+          owner: YOUR_GITHUB_ORG
+
+      - name: Join Tailnet
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade  # v3.2.3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci-deploy
+          version: "1.98.3"
+
+      - name: Pre-flight Kuma reachability
+        run: |
+          set -euo pipefail
+          if ! curl -sf --max-time 10 -o /dev/null -w "%{http_code}\n" "${KUMA_URL}/" | grep -qE '^(200|302)$'; then
+            echo "❌ Kuma not reachable at ${KUMA_URL}"
+            echo "   Check: tailscale serve config on the Kuma host."
+            exit 1
+          fi
+          echo "✅ Kuma reachable at ${KUMA_URL}"
+
+      - name: Setup Python
+        uses: actions/setup-python@b64ffcaf5b410884ad320a9cfac8866006a109aa  # v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: Install Kuma deps
+        run: pip install --quiet "uptime-kuma-api-v2==1.0.2" "PyYAML==6.0.2"
+
+      - name: Checkout workflow-templates
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          repository: YOUR_GITHUB_ORG/workflow-templates
+          ref: main
+          path: _workflow-templates
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Checkout app project.yamls
+        env:
+          APP_FILTER: ${{ inputs.app_filter }}
+          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # Replace with your actual app repo names
+          APPS="app1 app2 app3"
+          mkdir -p _app-configs
+          for app in $APPS; do
+            if [ -n "$APP_FILTER" ] && ! echo ",$APP_FILTER," | grep -q ",$app,"; then
+              echo "⏭️  Skipping $app (filtered)"
+              continue
+            fi
+            git clone \
+              --depth=1 \
+              --filter=blob:none \
+              --sparse \
+              "https://x-access-token:${GH_APP_TOKEN}@github.com/YOUR_GITHUB_ORG/${app}.git" \
+              "_app-configs/${app}"
+            # --no-cone: cone mode (git default) treats the arg as a directory and
+            # rejects the single file project.yaml; non-cone uses gitignore-style
+            # patterns and matches the file.
+            git -C "_app-configs/${app}" sparse-checkout set --no-cone project.yaml
+            echo "✅ Checked out project.yaml for ${app}"
+          done
+
+      - name: Sync Kuma monitors
+        env:
+          APP_FILTER: ${{ inputs.app_filter }}
+        run: |
+          set -euo pipefail
+          # Replace with your actual app repo names
+          APPS="app1 app2 app3"
+          PROJECT_YAMLS=""
+          for app in $APPS; do
+            if [ -n "$APP_FILTER" ] && ! echo ",$APP_FILTER," | grep -q ",$app,"; then
+              continue
+            fi
+            yaml="_app-configs/${app}/project.yaml"
+            if [ -f "$yaml" ]; then
+              PROJECT_YAMLS="$PROJECT_YAMLS $yaml"
+            else
+              echo "⚠️  No project.yaml for ${app} — skipping" >&2
+            fi
+          done
+          if [ -z "$PROJECT_YAMLS" ]; then
+            echo "ℹ️  No project.yaml files found — nothing to sync."
+            exit 0
+          fi
+          # Prune (remove monitors not declared in any project.yaml) is only safe
+          # when ALL apps are synced. With an active app_filter the declared-name
+          # set is incomplete and prune would delete valid monitors from the
+          # unfiltered apps.
+          PRUNE_FLAG="--prune"
+          if [ -n "$APP_FILTER" ]; then
+            PRUNE_FLAG=""
+            echo "ℹ️  app_filter active — prune disabled to protect unfiltered monitors"
+          fi
+          # shellcheck disable=SC2086 — intentional word-splitting for file list
+          python _workflow-templates/scripts/kuma_sync.py multi $PRUNE_FLAG $PROJECT_YAMLS

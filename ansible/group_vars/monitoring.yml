@@ -1,0 +1,40 @@
+---
+# Tailscale + Loki/Grafana config for the dedicated observability host.
+#
+# Auth-key comes from the `monitoring` GitHub Environment Secret
+# (TAILSCALE_AUTH_KEY), pre-authorized for tag:server-monitoring. An empty
+# value means the role installs Tailscale but skips `tailscale up` (safe
+# fallback — host will NOT join the tailnet). If it does not join, check that
+# the `monitoring` GitHub Environment has TAILSCALE_AUTH_KEY populated
+# (run `sync-secrets --server --secret-target monitoring`).
+tailscale_authkey: "{{ lookup('env', 'TAILSCALE_AUTH_KEY') }}"
+
+# Tag the host announces. Must be pre-declared in the tailnet ACL under
+# `tagOwners` (tag:server-monitoring) and the auth-key pre-authorized for it.
+#
+# OPERATOR NOTE: the role skips `tailscale up` on re-runs when the daemon is
+# already Running. Changing this list / hostname does NOT converge on the next
+# run — override `-e tailscale_force_up=true` for one invocation.
+tailscale_advertise_tags:
+  - tag:server-monitoring
+
+# S32 — restrict SSH to the Tailnet CIDR (public :22 closed).
+# Break-glass via the server remote console.
+ufw_allow_in:
+  - from: "100.64.0.0/10"
+    port: "22"
+    proto: tcp
+    comment: "ssh — tailnet only (S32)"
+
+# S214 — Loki + Grafana run here (see the monitoring play in site.yml).
+loki_retention_days: 30
+# Grafana admin password comes from /srv/loki/.env on the server (Variante 2).
+# Provision via: sync-secrets --server --secret-target monitoring
+# (Proton: server-monitoring/grafana_admin_password). The role creates
+# /srv/loki/.env as an empty 0600 file if absent; the container starts with
+# no admin password until sync-secrets has run once.
+grafana_admin_user: admin
+
+# Kuma reachable via CI at https://monitoring.{{ tailnet_domain }}:8443
+# (configured by the tailscale serve task in site.yml monitoring play).
+# tailnet_domain must be set in inventory per tenant.
