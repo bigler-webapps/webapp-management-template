@@ -63,6 +63,214 @@ Additional items needed:
 
 ## Part A -- Infrastructure: Provision a New Server
 
+### A.0 Prerequisites Setup — Prepare external services (Proton, Tailscale, Cloudflare, B2)
+
+**Timing:** This section is entirely manual and external to the infra repo. Allocate **1--2 hours** here.
+All steps must complete BEFORE A.1. The agent can skip if already done.
+
+#### A.0.1 Proton Pass: Create tenant vault + secret entries
+
+1. **Open Proton Pass** (desktop or web UI)
+2. **Create a new vault** (or use an existing one) named `Projekt <Tenant-Name>` (e.g. `Projekt ACME-Shop`)
+3. **Inside the vault, create these sub-folders / item categories:**
+
+   | Folder | Items to create | Purpose |
+   |---|---|---|
+   | `Database` | `username`, `password`, `database_name`, `host` (text fields) | PostgreSQL connection details |
+   | `Django` | `secret_key` (64+ random chars), `debug` (true/false) | Django settings (S40 guard: debug=false in non-local) |
+   | `Mail` | `host`, `port`, `user`, `password` | Email backend |
+   | `API-Keys` | app-specific API keys (e.g. stripe_key, openai_key) | External service integrations |
+   | `Credentials` | `ssh_key_for_staging_deploy_user`, `ssh_key_for_prod_deploy_user` (SSH private keys) | Deploy-user SSH keys |
+
+4. **Populate values:**
+   - `Database.username`: choose a username (e.g. `tenant_user`); generate from PostgreSQL
+   - `Database.password`: generate a strong random password (32+ chars)
+   - `Database.database_name`: choose a name (e.g. `tenant_db`); must be unique per tenant per server
+   - `Database.host`: the database server hostname (e.g. `postgres.internal` or the server's hostname if embedded)
+   - `Django.secret_key`: `python -c "import secrets; print(secrets.token_urlsafe(50))"` on a local machine
+   - `Django.debug`: `false` (required for production)
+   - `Mail.host`, `Mail.port`: your mail provider (e.g. `smtp.gmail.com`, `587`)
+   - `Mail.user`, `Mail.password`: SMTP credentials (or generate an app-specific password if using Gmail/Outlook)
+   - `Credentials.ssh_key_for_*`: Generate two separate SSH keys locally:
+     ```bash
+     ssh-keygen -t ed25519 -f tenant-staging-deploy -C "deploy@staging.<tenant>"
+     ssh-keygen -t ed25519 -f tenant-prod-deploy -C "deploy@prod.<tenant>"
+     # Paste the content of tenant-staging-deploy (private key) into Proton
+     # Paste the content of tenant-prod-deploy (private key) into Proton
+     # Save the public keys locally for Tailscale ACL setup (next section)
+     ```
+
+5. **Save and verify:** Each folder should have all expected items populated. Do NOT leave any value empty.
+
+**PAUSE POINT:** Proton vault structure must be complete and non-empty before A.0.2.
+
+---
+
+#### A.0.2 Tailscale: Register tenant and create auth-keys
+
+This section requires **Tailscale Business** (or Admin access to the tailnet).
+
+1. **Open Tailscale admin console** (`https://login.tailscale.com/admin`)
+
+2. **Create a new `tag:server-<tenant>` (if not using Space isolation)**
+   - Devices → Tags → Edit → add `tag:server-<tenant>` rule (e.g. `tag:server-acme-shop`)
+   - This tag will be assigned to the provisioned server
+
+3. **Create OAuth Client for CI/deploy** (if this is the first tenant on this platform):
+   - Settings → OAuth Clients → Create → give it a name (e.g. `CI-Deploy-<Tenant>`)
+   - **Grant:** `Devices: all`, `ACLs: write`
+   - Copy the `Client ID` and `Client Secret` → save locally (you will need these in A.3)
+
+4. **Create pre-auth keys** for the server's first-boot (ansible-provision will use these):
+   - Security → Pre-auth keys → Generate → set:
+     - **Ephemeral:** false (server should stay persistent)
+     - **Reusable:** false (one-time use)
+     - **Expiration:** 24 hours (provision must complete within this window)
+     - **Tags:** `tag:server-<tenant>` (e.g. `tag:server-acme-shop`)
+     - **Devices:** the server will get this tag on first auth
+   - Copy the key → save locally (needed in A.3 as `TAILSCALE_AUTH_KEY`)
+
+5. **Add SSH ACL rule** (allow CI runners to SSH into the server):
+   - Settings → ACLs → Edit policy JSON
+   - Find the `"ssh":` section and add:
+     ```json
+     "ssh": [
+       {
+         "action": "accept",
+         "src": ["tag:ci-deploy"],
+         "dst": ["tag:server-<tenant>"],
+         "users": ["~user"]
+       }
+     ]
+     ```
+     (Replace `<tenant>` and adjust users as needed. `~user` disables user switching.)
+   - Save. The rule applies immediately.
+
+6. **Create Cloudflare Tunnel token** (if this is the first tenant on this platform):
+   - Cloudflare Zero Trust → Access → Tunnels → Create tunnel
+   - Choose a name (e.g. `<tenant>-staging-tunnel`)
+   - Copy the tunnel token → save locally (needed in A.3 as `CLOUDFLARE_TUNNEL_TOKEN`)
+   - Note the tunnel UUID (needed later for DNS CNAME records)
+
+**PAUSE POINT:** All Tailscale auth-keys and Cloudflare tunnel tokens must be generated and saved locally before A.0.3.
+
+---
+
+#### A.0.3 Cloudflare: Add zone and configure DNS
+
+This section assumes you control the domain's registrar (e.g. Gandi, Namecheap, domain.com).
+
+1. **Add the zone to Cloudflare:**
+   - Cloudflare dashboard → Add a site
+   - Enter the domain (e.g. `example.com`)
+   - Select the free or paid plan
+   - Cloudflare will show two nameserver addresses (e.g. `ns1.cloudflare.com`, `ns2.cloudflare.com`)
+
+2. **Update registrar nameservers:**
+   - Log into your registrar (Gandi, Namecheap, etc.)
+   - Find the domain settings → Nameservers
+   - Replace the current nameservers with the two Cloudflare nameservers
+   - Save. DNS propagation takes 10 min–48 hours (usually ~5 min)
+
+3. **Wait for nameserver propagation:**
+   ```bash
+   # Verify locally:
+   dig NS example.com +short
+   # Expected: the Cloudflare nameserver addresses
+   ```
+
+4. **In Cloudflare, create the required DNS records:**
+   - **CNAME record for proxied apps:**
+     ```
+     Type:    CNAME
+     Name:    app  (for app.example.com)
+     Content: <tunnel-uuid>.cfargotunnel.com
+     Proxied: yes (orange cloud)
+     TTL:     Automatic
+     ```
+   - **A record for direct-access (staging server, Kuma, etc.):**
+     ```
+     Type:    A
+     Name:    staging  (for staging.example.com)
+     Content: <server-public-ip>  (the VPS IP you will provision in A.2)
+     Proxied: no (grey cloud)
+     TTL:     Automatic
+     ```
+
+5. **Generate Cloudflare API token:**
+   - My Profile → API Tokens → Create Token
+   - Template: `Edit Cloudflare Workers` or custom with these permissions:
+     - `Zone: Edit` (for DNS, SSL/TLS, etc.)
+     - `Zone: Read`
+   - Zone Resources: `Include: All zones` (or specific zone)
+   - Copy the token → save locally (needed in A.3 as `CLOUDFLARE_API_TOKEN`)
+
+**PAUSE POINT:** DNS must be propagated, records created, and API token saved before A.0.4.
+
+---
+
+#### A.0.4 Backblaze B2: Create bucket + API key
+
+Backblaze B2 is the S3-compatible backup storage. Free tier: 10 GB storage + 1 GB bandwidth/day.
+
+1. **Sign up / log in** to Backblaze B2
+2. **Create a bucket:**
+   - Buckets → Create Bucket
+   - Name: `<tenant>-backups` (e.g. `acme-shop-backups`)
+   - Lifecycle: enable "Hide" after 30 days (keeps deleted file versions for 30 days)
+   - Save
+3. **Create an Application Key (API credentials):**
+   - App Keys → Create Application Key
+   - Capabilities: `listBuckets`, `readBuckets`, `writeBuckets`, `deleteBuckets` (for restic restore)
+   - Bucket Restriction: restrict to the bucket just created
+   - Copy `Application Key ID` and `Application Key` (secret) → save locally
+
+4. **Note the bucket URL:**
+   - Buckets → select the bucket → copy the endpoint
+   - Format: `s3.<region>.backblazeb2.com` (e.g. `s3.us-west-004.backblazeb2.com`)
+
+Needed in A.3:
+- `B2_KEY_ID`: Application Key ID
+- `B2_APP_KEY`: Application Key (secret)
+- `RESTIC_REPO_B2`: `s3:s3.<region>.backblazeb2.com/<bucket>` (e.g. `s3:s3.us-west-004.backblazeb2.com/acme-shop-backups`)
+- `RESTIC_PASSWORD`: generate a strong random password (64+ chars); you will NOT be able to recover it
+
+---
+
+#### A.0.5 VPS Server: Procurement and initial SSH config
+
+Order a fresh server from your VPS provider (Hetzner, Linode, OVH, netcup, etc.). Minimum specs:
+
+| Resource | Minimum | Recommended |
+|---|---|---|
+| vCPU | 2 | 4 |
+| RAM | 4 GB | 8 GB |
+| Storage | 50 GB SSD | 100+ GB SSD |
+| OS | Ubuntu 22.04 LTS | Ubuntu 24.04 LTS |
+| IPv4 | 1 public IP | 1 public IP |
+
+**At provisioning time:**
+1. Choose Ubuntu 22.04 LTS or 24.04 LTS as the OS image
+2. Upload your **root SSH public key** (the one you generated locally or have on file)
+   - The VPS provider will install this as `authorized_keys` for the `root` user
+3. **IMPORTANT:** Do NOT use a root password. SSH key-only is much stronger.
+4. After the server boots, verify SSH access:
+   ```bash
+   ssh root@<server-public-ip>
+   # Expected: SSH login without password prompt
+   ```
+
+5. **Note the following:**
+   - `SSH_HOST`: the public IP address (e.g. `203.0.113.10`)
+   - `SSH_USER`: `root` (for initial provisioning; Ansible will create a `deploy` user)
+   - `SSH_PRIVATE_KEY` (root): the private key matching the public key you uploaded
+
+---
+
+**PAUSE POINT:** All of A.0 (Proton, Tailscale, Cloudflare, B2, VPS) must be complete and verified before proceeding to A.1.
+
+---
+
 ### A.1 Create your tenant repository
 
 1. On GitHub, navigate to `https://github.com/bigler-webapps/webapp-management-template`
@@ -114,30 +322,60 @@ Commit just the rename if you want it tracked, or keep it local-only (it is alre
 cp secrets.values.example.yaml secrets.values.yaml
 ```
 
-Edit `secrets.values.yaml` with your real values:
+Edit `secrets.values.yaml` with your real values. **All values come from A.0 setup:**
 
 ```yaml
 targets:
   production:
-    SSH_HOST: "203.0.113.10"
-    SSH_USER: "deploy"
+    # VPS server (from A.0.5)
+    SSH_HOST: "203.0.113.10"             # Public IP of the VPS
+    SSH_USER: "root"                      # Initial user is root; Ansible creates 'deploy' user
     SSH_PRIVATE_KEY: |
       -----BEGIN OPENSSH PRIVATE KEY-----
-      ...
+      <paste the private key from A.0.5 SSH key upload>
       -----END OPENSSH PRIVATE KEY-----
     SSH_PRIVATE_KEY_ROOT: |
-      -----BEGIN OPENSSH PRIVATE KEY-----
-      ...
+      <same as SSH_PRIVATE_KEY -- Ansible uses both for bootstrapping>
       -----END OPENSSH PRIVATE KEY-----
-    RESTIC_REPO_B2: "s3:..."
-    RESTIC_PASSWORD: "..."
-    # etc.
+
+    # Tailscale (from A.0.2)
+    TAILSCALE_AUTH_KEY: "<paste pre-auth key from A.0.2>"
+    
+    # Cloudflare Tunnel (from A.0.3)
+    CLOUDFLARE_TUNNEL_TOKEN: "<paste tunnel token from A.0.3>"
+    CLOUDFLARE_API_TOKEN: "<paste API token from A.0.3>"
+    CLOUDFLARE_ACCOUNT_ID: "<your Cloudflare account ID>"
+    
+    # Tailscale OAuth (CI/deploy) (from A.0.2)
+    TS_OAUTH_CLIENT_ID: "<OAuth Client ID from A.0.2>"
+    TS_OAUTH_SECRET: "<OAuth Client Secret from A.0.2>"
+    
+    # Backblaze B2 (from A.0.4)
+    RESTIC_REPO_B2: "s3:s3.us-west-004.backblazeb2.com/acme-shop-backups"
+    RESTIC_PASSWORD: "<strong random password from A.0.4>"
+    B2_KEY_ID: "<B2 Application Key ID from A.0.4>"
+    B2_APP_KEY: "<B2 Application Key secret from A.0.4>"
+    
+    # Traefik dashboard (choose a strong username:password via htpasswd)
+    TRAEFIK_DASHBOARD_AUTH: "<htpasswd output>"
+```
+
+**How to generate `TRAEFIK_DASHBOARD_AUTH`:**
+```bash
+# Install htpasswd (comes with apache2-utils on Ubuntu)
+sudo apt-get install apache2-utils
+
+# Generate username:password (replace "admin" and "STRONG_PASSWORD")
+htpasswd -c /dev/null admin
+# Paste the password when prompted. The output goes to stdout in the format:
+# admin:$apr1$XXXX$XXXX
+# Copy this value (including the user:hash part) into TRAEFIK_DASHBOARD_AUTH
 ```
 
 **Important:** `secrets.values.yaml` is gitignored. Never commit real secrets.
 Back this file up separately (encrypted USB stick, password manager, age, etc.).
 
-The full secret reference (which keys are required, formats, rotation) is in [SECRETS.md](SECRETS.md).
+**Full reference** (which keys are required, formats, rotation) is in [SECRETS.md](SECRETS.md).
 
 ### A.4 Sync secrets to GitHub Environment
 
