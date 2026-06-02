@@ -662,7 +662,7 @@ project_name: <tenant-slug>
 environments:
   staging:
     server: staging                # resolves via Tailscale to <tenant-env>.<your-tailnet-domain>
-    domain: <tenant-slug>.bigler-consult.ch
+    domain: <tenant-slug>.<your-domain>
     db_host_port: <unique-port>    # pick from 5430-5499 not yet used
     web_port: <unique-port>        # pick from 8100-8199 not yet used
   production:
@@ -930,7 +930,7 @@ gh run watch
 ssh deploy@<tenant-env>.<your-tailnet-domain> "docker ps --filter name=<tenant-slug> --format '{{.Names}} {{.Status}}'"
 
 # Smoke-test HTTPS endpoint
-curl -I https://<tenant-slug>.bigler-consult.ch/api/auth/_allauth/browser/v1/auth/session
+curl -I https://<tenant-slug>.<your-domain>/api/auth/_allauth/browser/v1/auth/session
 # Expected: HTTP/2 200 (or 401 if no session) -- NOT 502 or 503
 ```
 
@@ -939,7 +939,7 @@ curl -I https://<tenant-slug>.bigler-consult.ch/api/auth/_allauth/browser/v1/aut
 The agent MUST execute these post-deploy security verifications:
 
 ```bash
-DOMAIN="<tenant-slug>.bigler-consult.ch"
+DOMAIN="<tenant-slug>.<your-domain>"
 
 # S6: sec-headers present
 curl -sI "https://$DOMAIN" | grep -iE "strict-transport-security|x-frame-options|x-content-type-options|referrer-policy"
@@ -1113,7 +1113,7 @@ Fix: Tailscale admin → ACL → Edit JSON → add to `ssh:` section.
 
 ### Cloudflared tunnel connection offline
 
-Symptom: `curl https://<tenant>.bigler-consult.ch` returns 502.
+Symptom: `curl https://<tenant>.<your-domain>` returns 502.
 
 Diagnosis:
 
