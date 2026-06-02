@@ -1,4 +1,24 @@
-# Onboarding Guide -- Infrastructure and App
+**Step 1: Add the new tenant to kuma-sync.yml**
+
+The `Kuma Monitor Sync` workflow (`webapp-management/.github/workflows/kuma-sync.yml`)
+has a hardcoded `APPS` variable listing all monitored tenants. A new tenant is NOT
+auto-discovered -- you must add it:
+
+```bash
+# In webapp-management repo, edit .github/workflows/kuma-sync.yml
+# Find both APPS= lines (~line 90 and ~line 115) and add your tenant slug:
+APPS="bigler-consult hram ... <new-tenant-slug>"
+# Commit and push to main
+```
+
+**Step 2: Trigger Kuma Monitor Sync**
+
+```bash
+cd <webapps-root>/webapp-management
+gh workflow run kuma-sync.yml
+```
+
+This creates Kuma monitors for all apps in the APPS list, reading each app's `project.yaml` for domains and server.# Onboarding Guide -- Infrastructure and App
 
 > Agent-optimized. Stop at every PAUSE POINT for required human action or verification.
 >
@@ -63,6 +83,355 @@ Additional items needed:
 
 ## Part A -- Infrastructure: Provision a New Server
 
+### A.0 Prerequisites Setup — Prepare external services (Proton, Tailscale, Cloudflare, B2)
+
+**Timing:** This section is entirely manual and external to the infra repo. Allocate **1--2 hours** here.
+All steps must complete BEFORE A.1. The agent can skip already-done steps.
+
+#### A.0.1 Proton Pass: Understand the two-vault architecture
+
+The platform uses **two types of Proton Pass vaults**, each with a distinct purpose:
+
+```
+Proton Pass
+├── webapp-management          ← PLATFORM vault (one shared vault for the whole platform)
+│   ├── server-staging/        ← per-server items (one item group per server)
+│   ├── server-main-prod/
+│   ├── server-contact-prod/
+│   ├── server-runners/
+│   ├── server-monitoring/
+│   ├── ci-tokens/             ← shared across ALL apps
+│   ├── cloudflare-api/        ← shared
+│   ├── github/                ← shared (runner GH App + Kuma sync App)
+│   ├── terraform-cloud/       ← shared
+│   ├── traefik/               ← shared
+│   ├── monitoring/            ← shared (Kuma credentials)
+│   ├── cross-server-restore/  ← shared
+│   ├── shared-api-keys/       ← shared (MUI license, DeepL, etc.)
+│   ├── domain-example.com/    ← per-domain (origin cert + key)
+│   └── domain-other.com/
+│
+├── hram                       ← per-app vault (one vault per tenant app)
+├── jg-ferien                  ← per-app vault
+├── innoservice                ← per-app vault
+└── <new-tenant-slug>          ← you will create this in A.0.2
+```
+
+**Proton path format used in `secrets.yaml`:**
+```
+proton://<vault-name>/<item-name>/<field-name>
+```
+Examples:
+```
+proton://webapp-management/ci-tokens/ts_oauth_client_id   ← shared
+proton://webapp-management/server-staging/tailnet_auth_key ← per-server
+proton://hram/django/secret_key                            ← per-app
+```
+
+**For a new server deployment, what you need to create:**
+- In `webapp-management` vault: add a new `server-<target>` item group (A.0.2)
+- In `webapp-management` vault: add a new `domain-<domain>` item group if new domain (A.0.3)
+- Create a new per-app vault `<tenant-slug>` for the app's own secrets (A.0.4)
+
+**What is already in `webapp-management` and does NOT need to be recreated:**
+
+These items are platform-wide, shared by all tenants, and exist once per platform install:
+
+| Item | Fields it must contain | Purpose |
+|---|---|---|
+| `ci-tokens` | `ts_oauth_client_id`, `ts_oauth_secret`, `ts_provision_oauth_client_id`, `ts_provision_oauth_secret`, `tailscale_mgmt_auth_key` | Tailscale OAuth for CI deploy + provisioning |
+| `cloudflare-api` | `api_token`, `cf_access_token`, `account_id` | Terraform + CF Access |
+| `github` | `github_runner_app_id`, `github_runner_installation_id`, `github_runner_private_key`, `github_runner_sha_256` | Self-hosted runner GH App + Kuma sync App |
+| `terraform-cloud` | `api_token` | Terraform Cloud |
+| `traefik` | `acme_email`, `dashboard_auth` | Traefik dashboard auth; `acme_email` is required by docker-compose even though TLS uses CF Origin Certs |
+| `monitoring` | `kuma_url`, `kuma_automation_user`, `kuma_automation_password`, `discord_webhook_url` | Kuma automation + notifications |
+| `cross-server-restore` | `transport_key` | Encrypted cross-server backup transport |
+| `shared-api-keys` | `mui_license`, `deepl_api` | MUI X license (all apps), DeepL API |
+
+**PAUSE POINT:** If the `webapp-management` vault does not exist yet (brand-new platform),
+you must first set it up completely including all shared items before proceeding.
+Ask the platform operator to confirm the vault exists and the shared items are populated.
+
+---
+
+#### A.0.2 Proton Pass: Add server-specific items to webapp-management vault
+
+For each new server (`<target>` = inventory target name, e.g. `staging`, `main-prod`):
+
+1. **Open Proton Pass → webapp-management vault**
+
+2. **Create a new login/note item** named `server-<target>` (e.g. `server-staging`)
+
+3. **Add these custom fields to the item:**
+
+   | Field name | Value | How to obtain |
+   |---|---|---|
+   | `tailnet_auth_key` | Tailscale pre-auth key | A.0.5 below |
+   | `tunnel_token` | Cloudflare Tunnel token | A.0.6 below |
+   | `b2_key_id` | Backblaze B2 Application Key ID | A.0.7 below |
+   | `b2_app_key` | Backblaze B2 Application Key secret | A.0.7 below |
+   | `restic_repo` | `s3:s3.<region>.backblazeb2.com/<bucket>` | A.0.7 below — GitHub Secret key: `RESTIC_REPO_B2` |
+   | `restic_password` | `openssl rand -base64 48` (run locally, save here) | Generate now |
+   | `domain_traefik` | e.g. `traefik.<your-domain>` | Your DNS setup |
+   | `domain_kuma` | e.g. `status.<your-domain>` (only on the monitoring server) | Your DNS setup |
+
+   **Monitoring server only:** add a `server-monitoring` item to the **`webapp-management` vault** (same vault as all other server-* items — NOT a new vault) with an extra field:
+   | Field | Value |
+   |---|---|
+   | `grafana_admin_password` | Strong random password for Grafana admin user |
+
+   > **`restic_password` is permanent.** Generate it now with `openssl rand -base64 48`,
+   > paste directly into Proton Pass, and do NOT save it anywhere else. Losing it = losing
+   > access to all backups for this server.
+
+4. **Repeat for each additional server** (staging, prod, etc.) — each gets its own item.
+
+**PAUSE POINT:** All fields in `server-<target>` must be populated before A.0.3.
+
+---
+
+#### A.0.3 Proton Pass: Add domain-specific items to webapp-management vault (if new domain)
+
+For each domain that needs Cloudflare Origin Certificate TLS (skip if the domain already exists):
+
+1. **Open Proton Pass → webapp-management vault**
+
+2. **Create a new item** named `domain-<domain>` (e.g. `domain-example.com`)
+
+3. **Add these custom fields** — values will be filled in during A.0.6 (after you create the Origin Cert):
+
+   | Field name | Value |
+   |---|---|
+   | `origin_cert` | PEM content of the Cloudflare Origin Certificate |
+   | `origin_key` | PEM content of the private key |
+
+   > Leave these empty for now. You will fill them in during A.0.6.
+
+---
+
+#### A.0.4 Proton Pass: Create per-app vault for the new tenant
+
+Each tenant app gets its own Proton vault. The vault name is the tenant slug (lowercase, no prefix).
+
+1. **Open Proton Pass → Create new vault**
+
+2. **Name it exactly `<tenant-slug>`** (e.g. `acme-shop`) — lowercase, no spaces, no "Projekt" prefix
+
+3. **Create these items inside the vault:**
+
+   **Item: `django`**
+   | Field | Value | Notes |
+   |---|---|---|
+   | `secret_key` | `python -c "import secrets; print(secrets.token_urlsafe(50))"` | Generate fresh; never reuse |
+
+   **Item: `database`**
+   | Field | Value | Notes |
+   |---|---|---|
+   | `password` | strong random password (32+ chars) | `openssl rand -base64 24` |
+
+   > Note: `DB_USER`, `DB_NAME`, `DB_HOST` are non-secret config values — they go in
+   > `project.yaml` under `app_env`, not in `secrets.yaml`. See B.2.1.
+
+   **Item: `mail`**
+   | Field | Value |
+   |---|---|
+   | `password` | SMTP password or app-specific password for your mail provider |
+
+   > `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER` are non-secret — they go in `project.yaml`.
+
+   **Item: `social-auth`** (only if the app uses OAuth login)
+   | Field | Value |
+   |---|---|
+   | `google_secret` | Google OAuth client secret |
+   | `microsoft_secret` | Microsoft OAuth client secret |
+
+   > The corresponding client IDs are non-secret and go in `project.yaml`.
+
+   **App-specific items** (add as needed for the specific app's requirements)
+
+4. **Do NOT add shared secrets here.** The following are already in `webapp-management` and
+   referenced from there in `secrets.yaml` — do not duplicate:
+   - `ci-tokens/*` (Tailscale OAuth, Kuma automation)
+   - `shared-api-keys/*` (MUI license, DeepL)
+   - `monitoring/*` (Kuma automation credentials)
+
+**PAUSE POINT:** Per-app vault complete. Verify all items exist and fields are non-empty.
+
+---
+
+#### A.0.5 Tailscale: Create pre-auth key for the new server
+
+This section requires Admin access to the tailnet.
+
+1. **Open Tailscale admin console** (`https://login.tailscale.com/admin`)
+
+2. **Verify the `tag:server` ACL and SSH rule already exists** (platform-wide, set up once):
+   - Settings → ACL → check for an `ssh` block allowing `tag:ci-deploy` → `tag:server`:
+     ```json
+     "ssh": [
+       {
+         "action": "accept",
+         "src": ["tag:ci-deploy"],
+         "dst": ["tag:server"],
+         "users": ["~user"]
+       }
+     ]
+     ```
+   - If missing, add it. This is a one-time platform setup, not per-server.
+
+3. **Create a pre-auth key for the new server:**
+   - Keys → Generate auth key → set:
+     - **Ephemeral:** false (server stays persistent)
+     - **Reusable:** false (one-time use)
+     - **Expiration:** 24 hours (provision must complete within this window)
+     - **Tags:** `tag:server` (or more specific tag if your ACL uses `tag:server-<role>`)
+   - **Copy the key → immediately paste into Proton Pass:**
+     - Vault: `webapp-management` → Item: `server-<target>` → Field: `tailnet_auth_key`
+   - Do NOT save locally or paste elsewhere.
+
+4. **The Tailscale OAuth clients** (TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET) for CI are
+   platform-shared secrets that already exist in `webapp-management/ci-tokens/`.
+   Do NOT create new OAuth clients per tenant.
+
+**PAUSE POINT:** `tailnet_auth_key` field populated in Proton Pass `server-<target>` before A.0.6.
+
+---
+
+#### A.0.6 Cloudflare: Create tunnel, Origin Certificate, and DNS records
+
+> **Platform API token and Account ID** are already in `webapp-management/cloudflare-api/`.
+> Do NOT create new API tokens per tenant.
+
+**Step 1: Create a new Cloudflare Tunnel for this server**
+
+1. Cloudflare Zero Trust dashboard → Networks → Tunnels → Create tunnel
+2. Choose **Cloudflared** as connector type
+3. Name: `<target>` (e.g. `staging` or `main-prod`)
+4. Copy the tunnel token that appears
+5. **Immediately store in Proton Pass:**
+   - Vault: `webapp-management` → Item: `server-<target>` → Field: `tunnel_token`
+6. **Note the tunnel UUID** — visible in Zero Trust → Tunnels → click the tunnel name
+   - You will need this for the DNS CNAME record below
+
+**Step 2: Add the domain to Cloudflare (if new domain)**
+
+If this domain is not yet in Cloudflare:
+
+1. Cloudflare dashboard → Add a site → enter the domain (e.g. `example.com`)
+2. Cloudflare shows two nameserver addresses (e.g. `ns1.cloudflare.com`, `ns2.cloudflare.com`)
+3. At your registrar (Gandi, Namecheap, etc.): update the domain's nameservers to these two
+4. Wait for propagation (usually 5 min, up to 48 h):
+   ```bash
+   dig NS example.com +short
+   # Expected: Cloudflare nameserver addresses
+   ```
+
+**Step 3: Create Cloudflare Origin Certificate and store in Proton Pass**
+
+TLS uses Cloudflare Origin Certificates — NOT ACME / Let's Encrypt.
+
+1. Cloudflare dashboard → select domain → SSL/TLS → Origin Server → Create Certificate
+2. Select hostnames: `*.example.com` and `example.com`
+3. Choose validity: 15 years
+4. Copy the **Certificate** (PEM) → **immediately store in Proton Pass:**
+   - Vault: `webapp-management` → Item: `domain-<domain>` → Field: `origin_cert`
+5. Copy the **Private Key** (PEM) → **immediately store in Proton Pass:**
+   - Vault: `webapp-management` → Item: `domain-<domain>` → Field: `origin_key`
+6. Do NOT save either value locally
+
+> The `deploy-traefik` workflow reads these from GitHub Secrets (synced from Proton by
+> `sync-secrets --server`) and writes them to `./certs/<domain>.pem` and `.key` on the server.
+
+**Step 4: Create DNS records**
+
+For **apps routed through the Cloudflare Tunnel** (most app subdomains):
+```
+Type:    CNAME
+Name:    app              (for app.example.com)
+Content: <tunnel-uuid>.cfargotunnel.com
+Proxied: yes (orange cloud)
+TTL:     Automatic
+```
+
+For **direct-access records** (staging server IP, Kuma on Tailnet, etc.):
+```
+Type:    A
+Name:    staging          (for staging.example.com)
+Content: <server-public-ip>  (the VPS IP from A.0.8)
+Proxied: no (grey cloud)
+TTL:     Automatic
+```
+
+**PAUSE POINT:** `tunnel_token` and `origin_cert`/`origin_key` in Proton Pass, DNS records created.
+
+---
+
+#### A.0.7 Backblaze B2: Create bucket + credentials per server
+
+Each server gets its own B2 bucket. Free tier: 10 GB + 1 GB bandwidth/day.
+
+1. **Sign up / log in** to Backblaze B2
+
+2. **Create a bucket:**
+   - Buckets → Create Bucket
+   - Name: `<target>-backups` (e.g. `staging-backups`, `main-prod-backups`)
+   - Lifecycle: enable "Keep prior versions for 30 days"
+   - Save
+
+3. **Create an Application Key restricted to this bucket:**
+   - App Keys → Create Application Key
+   - Name: `restic-<target>`
+   - Capabilities: `listBuckets`, `readBuckets`, `writeBuckets`, `deleteFiles`
+   - Bucket Restriction: select the bucket just created
+   - **Copy `Application Key ID` → immediately store in Proton Pass:**
+     - Vault: `webapp-management` → Item: `server-<target>` → Field: `b2_key_id`
+   - **Copy `Application Key` secret → immediately store in Proton Pass:**
+     - Vault: `webapp-management` → Item: `server-<target>` → Field: `b2_app_key`
+   - Do NOT save locally
+
+4. **Build and store the restic repo URL in Proton Pass:**
+   - Format: `s3:s3.<region>.backblazeb2.com/<bucket-name>`
+   - Find the region: Buckets → select bucket → Endpoint column
+   - Example: `s3:s3.us-west-004.backblazeb2.com/staging-backups`
+   - **Store in Proton Pass:** `server-<target>` → Field: `restic_repo`
+
+5. **`restic_password` was generated in A.0.2** and already stored in Proton Pass.
+   Verify it is non-empty there.
+
+**PAUSE POINT:** All B2 fields populated in `server-<target>` in Proton Pass.
+
+---
+
+#### A.0.8 VPS Server: Procurement
+
+Order a fresh server from your VPS provider (Hetzner, Linode, OVH, netcup, etc.). Minimum specs:
+
+| Resource | Minimum | Recommended |
+|---|---|---|
+| vCPU | 2 | 4 |
+| RAM | 4 GB | 8 GB |
+| Storage | 50 GB SSD | 100+ GB SSD |
+| OS | Ubuntu 22.04 LTS | Ubuntu 24.04 LTS |
+| IPv4 | 1 public IP | 1 public IP |
+
+> **No SSH keys needed.** Provisioning uses Tailscale-SSH keyless access via the `provision`
+> user. The Tailscale auth key (stored in Proton in A.0.2) is sufficient for ansible-provision
+> to reach the server after first-boot. Root password access at the VPS console is the
+> break-glass path.
+
+1. Choose Ubuntu 22.04 LTS or 24.04 LTS as the OS image
+2. Set a strong root password at the VPS provider (used only for console break-glass)
+3. After the server boots, **note the public IP address**
+4. Verify the server is reachable (from the VPS console if needed, or via `ping <ip>`)
+
+**Note the server's public IP** — you will need it for DNS A records in A.0.6.
+
+---
+
+**PAUSE POINT:** All of A.0 (Proton, Tailscale, Cloudflare, B2, VPS) must be complete and verified before proceeding to A.1.
+
+---
+
 ### A.1 Create your tenant repository
 
 1. On GitHub, navigate to `https://github.com/bigler-webapps/webapp-management-template`
@@ -88,9 +457,23 @@ Edit `inventory/inventory.yaml`:
 ```yaml
 version: 1
 targets:
-  production:
+  staging:
+    github_environment: staging
+    deploy_user: deploy
+    compose_profile: staging          # maps to Docker Compose --profile flag
+    roles:
+      - traefik
+      - restore              # staging is restore-destination only
+      # backup/maintenance/janitor/ssh_sync are production-only roles
+    sync_staging_apps: []
+    infra_container_tokens:           # containers managed by deploy-traefik (not app containers)
+      - traefik
+      - cloudflared
+
+  production:                # example production target
     github_environment: production
     deploy_user: deploy
+    compose_profile: main
     roles:
       - traefik
       - backup
@@ -98,80 +481,114 @@ targets:
       - janitor
       - ssh_sync
       - restore
-    sync_staging_apps: []
-    expected_container_tokens:
+    sync_staging_apps:
+      - <tenant-slug>        # apps whose staging syncs from this server
+    infra_container_tokens:
       - traefik
 ```
 
 Commit just the rename if you want it tracked, or keep it local-only (it is already in `.gitignore`).
 
-### A.3 Prepare server secrets (secrets.yaml server class)
+### A.3 Update secrets.yaml and sync to GitHub
 
-`secrets.yaml` (committed) defines the **schema** -- which secret keys exist.
-`secrets.values.yaml` (gitignored) holds the **real values** per target.
+`secrets.yaml` (committed) is the **schema**: it declares which GitHub Secret keys exist and maps them to Proton Pass paths. It follows the two-vault architecture from A.0.1.
+
+1. **Open `secrets.yaml`** and update the path placeholders to match your actual setup:
+
+   The file uses `{target}` as a placeholder for the inventory target name. Example paths it should contain (already in the template):
+   ```yaml
+   TAILSCALE_AUTH_KEY:
+     source_template: "proton://webapp-management/server-{target}/tailnet_auth_key"
+   CLOUDFLARE_TUNNEL_TOKEN:
+     source_template: "proton://webapp-management/server-{target}/tunnel_token"
+   B2_KEY_ID:
+     source_template: "proton://webapp-management/server-{target}/b2_key_id"
+   CLOUDFLARE_API_TOKEN:
+     source: "proton://webapp-management/cloudflare-api/api_token"
+   TS_OAUTH_CLIENT_ID:
+     source: "proton://webapp-management/ci-tokens/ts_oauth_client_id"
+   ORIGIN_CERT_<YOUR_DOMAIN>:
+     source: "proton://webapp-management/domain-<your-domain>/origin_cert"
+     exclude_from_env: true
+   ORIGIN_KEY_<YOUR_DOMAIN>:
+     source: "proton://webapp-management/domain-<your-domain>/origin_key"
+     exclude_from_env: true
+   ```
+
+   **Paths that need adapting:**
+   - Replace `domain-<your-domain>` entries to match your actual domain item name(s) in Proton
+   - Ensure `config.target_repo` is set to `<your-org>/<your-infra-repo>`
+
+2. **Verify Traefik dashboard auth is in Proton Pass:**
+   ```bash
+   # If missing, generate:
+   sudo apt-get install apache2-utils
+   htpasswd -nb admin <strong-password>
+   # Output: admin:$apr1$XXXX$...
+   # Store in: webapp-management vault → traefik item → dashboard_auth field
+   ```
+
+3. **Push server-class secrets to GitHub for each target:**
+   ```bash
+   # From within your webapp-management repo clone:
+   sync-secrets --server --secret-source proton --secret-target <target>
+   # Example:
+   sync-secrets --server --secret-source proton --secret-target staging
+   sync-secrets --server --secret-source proton --secret-target main-prod
+   ```
+
+   `sync-secrets` reads `secrets.yaml` + `inventory/inventory.yaml` to resolve which
+   GitHub Environment to push to, then fetches each `source:` / `source_template:`
+   value from Proton Pass and pushes it as a GitHub Environment Secret.
+
+4. **Verify in GitHub:**
+   - Repo → Settings → Environments → `<target>` → Environment secrets
+   - All declared keys should appear (values are masked)
+
+**Full reference** (which keys are required, formats, rotation) is in [SECRETS.md](SECRETS.md).
+
+### A.4 Create GitHub Environments
+
+Create one GitHub Environment per inventory target before running `sync-secrets`:
 
 ```bash
-cp secrets.values.example.yaml secrets.values.yaml
+# Create staging environment
+gh api -X PUT repos/<owner>/<infra-repo>/environments/staging \
+  --input - <<'JSON'
+{"deployment_branch_policy": null}
+JSON
+
+# Create production environment (example)
+gh api -X PUT repos/<owner>/<infra-repo>/environments/main-prod \
+  --input - <<'JSON'
+{"deployment_branch_policy": null}
+JSON
 ```
 
-Edit `secrets.values.yaml` with your real values:
-
-```yaml
-targets:
-  production:
-    SSH_HOST: "203.0.113.10"
-    SSH_USER: "deploy"
-    SSH_PRIVATE_KEY: |
-      -----BEGIN OPENSSH PRIVATE KEY-----
-      ...
-      -----END OPENSSH PRIVATE KEY-----
-    SSH_PRIVATE_KEY_ROOT: |
-      -----BEGIN OPENSSH PRIVATE KEY-----
-      ...
-      -----END OPENSSH PRIVATE KEY-----
-    RESTIC_REPO_B2: "s3:..."
-    RESTIC_PASSWORD: "..."
-    # etc.
-```
-
-**Important:** `secrets.values.yaml` is gitignored. Never commit real secrets.
-Back this file up separately (encrypted USB stick, password manager, age, etc.).
-
-The full secret reference (which keys are required, formats, rotation) is in [SECRETS.md](SECRETS.md).
-
-### A.4 Sync secrets to GitHub Environment
-
-1. In your tenant repo on GitHub: **Settings → Environments → New environment**
-2. Name it `production` (matching your inventory target)
-3. Leave it empty for now -- `sync-secrets` will populate it
-
-Push secrets from `secrets.values.yaml` to GitHub:
-
-```bash
-sync-secrets \
-  --server \
-  --secret-source yaml \
-  --values-file secrets.values.yaml \
-  --secret-target production
-```
-
-What this does:
-- Reads `secrets.yaml` to know which keys exist
-- Reads `secrets.values.yaml` to get the values for `production`
-- Pushes each value as a GitHub Environment Secret in the environment resolved from `inventory.yaml`
-
-After it completes, verify in **Repo → Settings → Environments → production → Environment secrets**
-that all keys are present.
+> The canonical secret sync is covered in A.3: `sync-secrets --server --secret-source proton --secret-target <target>`.
+> The GitHub Environment just needs to exist first so the API call has a target.
 
 ### A.5 Provision the server (ansible-provision.yml)
 
-You need a fresh server. Suggested config:
+**First-run bootstrap (fresh server — OPERATOR step, NOT CI):**
 
-- Ubuntu 22.04 or 24.04 LTS
-- Minimum 2 vCPU, 4 GB RAM (more for Java-heavy apps)
-- A root SSH key configured during creation
+The `ansible-provision.yml` CI workflow connects as the `provision` user via Tailscale-SSH. A fresh server has neither the `provision` user nor Tailscale installed yet, so the CI workflow cannot reach it on the first run. You must bootstrap manually from a local machine that can SSH into the server via its public IP:
 
-Note the public IP -- you will need it in the DNS steps below.
+```bash
+# From WSL / Linux on your admin machine:
+cd <webapps-root>/webapp-management/ansible
+
+# Temporarily override the host to use the public IP (the host_vars file uses
+# the Tailscale hostname which does not exist yet on a fresh server):
+ansible-playbook site.yml \n  --inventory inventory/hosts.yml \n  --limit <target> \n  --extra-vars "ansible_host=<server-public-ip> ansible_user=root" \n  --ask-pass
+```
+
+This first run installs Tailscale (using the auth key from Proton/GitHub), creates the `provision` user, and enables Tailscale-SSH. After it completes:
+- The server appears in the Tailscale admin console
+- `ansible_host` in `host_vars/<target>.yml` should be the Tailscale MagicDNS hostname (already set in the template)
+- Subsequent runs via the `ansible-provision.yml` CI workflow use Tailscale-SSH keyless as the `provision` user
+
+**PAUSE POINT:** Confirm the first-run bootstrap completed and the server is visible in Tailscale admin before triggering the CI workflow.
 
 The canonical provisioning path is `ansible-provision.yml`, which runs the idempotent
 `ansible/site.yml` playbook. It covers BOTH fresh-host bootstrap AND incremental
@@ -189,10 +606,12 @@ The workflow takes ~3--5 minutes for a fresh host. Expected role activity:
 - Docker installation
 - Tailscale install + auth-key registration (`tailscale up --ssh`)
 - cloudflared install + tunnel-token registration
-- Deploy user creation
+- Deploy user + provision user creation
 - UFW configuration (deny incoming, allow 22/80/443 -- see note below)
 - fail2ban setup
-- Directory structure under `/srv/`
+- Promtail install (log shipper → Loki on monitoring host)
+- Swap configuration (`swap` role)
+- Directory structure under `/srv/` (`srv_dirs` role)
 
 > **About `22/tcp` staying open**: provisioning leaves public-internet SSH (`22/tcp`) open
 > by design. This is the **break-glass path** while Tailscale-SSH is unproven on the new server.
@@ -214,13 +633,12 @@ blind; understand what happened.
 
 ### A.6 Deploy Traefik infrastructure
 
-1. Adapt `docker-compose.yml` to your needs:
-   - Set `DOMAIN_TRAEFIK`, `DOMAIN_KUMA`, `TRAEFIK_DASHBOARD_AUTH` in secrets
-   - **Important:** `TRAEFIK_DASHBOARD_AUTH` needs `$$` (double-dollar) escaping -- see
-     [DASHBOARD.md](DASHBOARD.md) for the gotchas
-   - Remove the WireGuard service if you do not use it (use Tailscale instead)
-   - Do NOT set `ACME_EMAIL` -- the platform uses Cloudflare Origin Certificates, not ACME/Let's Encrypt
-2. Trigger `Deploy Traefik Infrastructure` workflow
+1. Verify that A.3 (`sync-secrets --server`) already pushed these required variables as GitHub Secrets:
+   - `DOMAIN_TRAEFIK`, `DOMAIN_KUMA`, `ACME_EMAIL`, `TRAEFIK_DASHBOARD_AUTH`
+   - Sources: `webapp-management/server-{target}/domain_traefik`, `domain_kuma` and `webapp-management/traefik/acme_email`, `dashboard_auth` in Proton
+   - `ACME_EMAIL` must be non-empty (docker-compose references it even when TLS uses CF Origin Certs)
+   - `TRAEFIK_DASHBOARD_AUTH` needs `$$` (double-dollar) in the compose file -- see [DASHBOARD.md](DASHBOARD.md)
+2. Trigger the `Deploy Infrastructure` workflow (exact name in GitHub Actions tab)
 3. Point your DNS records -- see A.7 below for the correct record types per use case
 
 ### A.7 Configure Cloudflare Tunnel + DNS + Origin Certificate
@@ -244,7 +662,7 @@ Content: <tunnel-uuid>.cfargotunnel.com
 Proxied: yes (orange cloud)
 ```
 
-Replace `<tunnel-uuid>` with the UUID from `webapp-management/secrets.yaml` `CF_TUNNEL_ID`.
+Replace `<tunnel-uuid>` with the UUID noted during tunnel creation in A.0.6 Step 1. There is no `CF_TUNNEL_ID` in `secrets.yaml` -- the UUID comes from the Cloudflare Zero Trust dashboard.
 
 For **direct-access records** (e.g. the raw server IP for admin/break-glass, Kuma on Tailnet,
 or any host that does NOT go through the tunnel):
@@ -256,26 +674,23 @@ Content: <server-public-ip>
 Proxied: no (grey cloud) -- only for direct access
 ```
 
-#### A.7.2 Origin Certificate creation
+#### A.7.2 Origin Certificate -- automated placement via deploy-traefik
 
-For each apex domain (or wildcard) that needs TLS:
+The cert content was stored in Proton Pass in A.0.3 (`origin_cert` + `origin_key` fields
+in `webapp-management/domain-<domain>`). `sync-secrets --server` (A.3) pushed them as
+GitHub Secrets (`ORIGIN_CERT_<DOMAIN_SLUG>` + `ORIGIN_KEY_<DOMAIN_SLUG>`).
 
-1. In the Cloudflare dashboard: **SSL/TLS → Origin Server → Create Certificate**
-2. Select the hostnames: typically `*.yourdomain.com` and `yourdomain.com`
-3. Choose validity (15 years is standard for origin certs)
-4. Copy the certificate and private key
-5. Place them on the server:
-   - Certificate: `./certs/<domain>.pem`
-   - Private key: `./certs/<domain>.key`
-   - Permissions: `chmod 600 ./certs/<domain>.key`
-6. Reference the cert paths in Traefik's TLS configuration
+The `Deploy Infrastructure` workflow reads these secrets and writes the files to the server:
+- `./certs/<domain-slug>.crt` (e.g. `./certs/example-com.crt`)
+- `./certs/<domain-slug>.key` (e.g. `./certs/example-com.key`)
 
-**PAUSE POINT:** Manual step. The platform-operator creates the cert via the Cloudflare dashboard,
-copies the PEM/key content, and places it on the server before Traefik can serve TLS.
+The slug format is: domain with dots and hyphens only (e.g. `example.com` → `example-com`).
 
-For staging subdomains under your apex domain: the existing wildcard cert
-`*.<your-apex-domain>` typically already covers new subdomains. Verify coverage before
-creating a new cert.
+**You do not manually place cert files on the server.** Triggering `Deploy Infrastructure`
+(A.6 step 2) handles this automatically.
+
+For staging subdomains under your apex domain: the existing wildcard cert `*.<your-apex-domain>`
+typically already covers new subdomains. Verify coverage before creating a new cert.
 
 #### A.7.3 Update tunnel ingress
 
@@ -304,39 +719,31 @@ gh workflow run deploy-traefik.yml --field target=staging
 **VERIFY:** `curl -I https://<subdomain>.<domain>/` returns HTTP 200 or the expected
 redirect/auth response -- NOT 502 or 503.
 
-### A.8 Register Uptime Kuma monitors (Tailnet-Serve path :8443)
+### A.8 Sync Kuma notification channels (Tailnet-Serve path :8443)
 
-Kuma is accessed via Tailnet-Serve on port `:8443`. The monitoring infrastructure uses
-Tailscale as the network path -- this is the current architecture, not a future upgrade.
+Kuma is accessed via Tailnet-Serve on port `:8443`. This step syncs notification channels
+(Discord webhooks, etc.) to the Kuma instance -- it does NOT register per-app monitors.
+App monitors are registered via `kuma-sync.yml` in B.10.
 
 ```bash
 cd <webapps-root>/webapp-management
-gh workflow run sync-kuma-notifications.yml
+gh workflow run sync-kuma-notifications.yml --field target=<target>
+# target = inventory target name (e.g. monitoring, staging)
 ```
 
-Verify in the Kuma dashboard (`https://kuma.<your-domain>`) that monitors are active
-and green.
+Verify in the Kuma dashboard (`https://kuma.<your-domain>`) that notification channels
+are configured (Settings → Notification).
 
 ### A.9 Verify backups
 
-Set up Backblaze B2:
+B2 credentials were stored in Proton Pass (A.0.7) and synced to GitHub via `sync-secrets --server` (A.3). There is nothing new to configure here.
 
-1. Create a B2 bucket
-2. Create an Application Key with read/write permissions to that bucket
-3. Note the `keyID`, `applicationKey`, and bucket URL
-4. Add them to `secrets.values.yaml` under your target
-5. Generate a strong `RESTIC_PASSWORD` (this is permanent -- losing it means losing
-   access to all backups)
-6. Push to GitHub:
-   ```bash
-   sync-secrets --server --secret-source yaml \
-     --values-file secrets.values.yaml --secret-target production
-   ```
+Run a manual backup to verify the pipeline end-to-end:
 
-Run the backup workflow manually once:
+1. **Actions → Backup → Run workflow** → select `target` = `<your-target>`
+2. Check the logs -- restic should initialise the repo on first run (or snapshot on subsequent runs) and exit cleanly
 
-1. **Actions → Backup → Run workflow** → `production`
-2. Check the logs -- restic should initialize the repo, snapshot, and exit cleanly
+If backup fails with "repository does not exist": first run **Actions → Restic Init → Run workflow** for the same target, then retry.
 
 ### A.10 Part A acceptance criteria
 
@@ -421,35 +828,58 @@ Minimum config:
 
 ```yaml
 project_name: <tenant-slug>
+container_prefix: <short-prefix>           # e.g. "as" for acme-shop
+image_name: "ghcr.io/<your-org>/<tenant-slug>-backend"
+
+# Non-secret runtime config (goes here, NOT in secrets.yaml):
+app_env:
+  DB_NAME: <tenant-slug>_db
+  DB_USER: <tenant-slug>
+  DB_HOST: db
+  EMAIL_HOST: smtp.example.com
+  EMAIL_PORT: "587"
+  EMAIL_USER: noreply@<your-domain>
+  # Add GOOGLE_CLIENT_ID, MICROSOFT_CLIENT_ID etc. as needed
+
 environments:
   staging:
-    server: staging                # resolves via Tailscale to <tenant-env>.<your-tailnet-domain>
-    domain: <tenant-slug>.bigler-consult.ch
-    db_host_port: <unique-port>    # pick from 5430-5499 not yet used
-    web_port: <unique-port>        # pick from 8100-8199 not yet used
+    server: staging                # Tailscale node name; resolves via MagicDNS
+    use_traefik: true
+    domains:
+      - "<tenant-slug>.<your-staging-domain>"
   production:
-    server: prod-1                 # or whatever the production server name is
-    domain: app.<tenant-domain>
-    db_host_port: <unique-port>
-    web_port: <unique-port>
-central_services:
-  kuma:
-    host: kuma.<your-domain>
+    server: main-prod              # or the production server's Tailscale node name
+    use_traefik: true
+    domains:
+      - "<your-production-domain>"
+  local:
+    use_traefik: false
+    domains:
+      - "localhost"
+    web_port: <unique-port>        # pick from 8100-8199, not used by other local apps
+    db_port: <unique-port>         # pick from 5433-5499, not used by other local apps
+    frontend_port: <unique-port>   # Vite dev server; pick from 5174-5299
+    redis_port: <unique-port>      # Redis; pick from 6380-6499
 ```
+
+> **Non-secret config belongs in `app_env`**, not in `secrets.yaml`. Values like
+> `DB_NAME`, `DB_USER`, `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, OAuth client IDs
+> are not secrets and do not belong in Proton Pass.
 
 **VERIFY:** `python -c "import yaml; print(yaml.safe_load(open('project.yaml')))"` parses without error.
 
 #### B.2.2 Pick unique ports
 
-The agent MUST pick ports not yet used by other tenants. Check via:
+The agent MUST pick ports not yet used by other tenants. Check the local environments in each app's `project.yaml`:
 
 ```bash
 for app in hram jg-ferien kerzenziehen innoservice survey_app survey_contact_app reimbursements; do
-  grep -E "DB_HOST_PORT|WEB_PORT" "<webapps-root>/$app/secrets.yaml" 2>/dev/null | grep -oE '[0-9]+' | head -2
+  echo "=== $app ==="
+  grep -E "web_port|db_port|frontend_port|redis_port" "<webapps-root>/$app/project.yaml" 2>/dev/null
 done
 ```
 
-Pick `db_host_port` and `web_port` outside the union of the above.
+Pick all four ports (`web_port`, `db_port`, `frontend_port`, `redis_port`) outside the union of the above.
 
 ### B.3 Configure secrets.yaml (app class)
 
@@ -458,25 +888,32 @@ Pick `db_host_port` and `web_port` outside the union of the above.
 The template's `secrets.yaml` defines the SCHEMA. Each `source:` or `source_template:` URL
 points into Proton-Pass. Update these to point to the new tenant's Proton vault.
 
-Quick path: copy `jg-ferien/secrets.yaml` and find/replace:
-- `proton://Projekt HRAM/` → `proton://Projekt <Tenant-Name>/`
-- any other tenant-specific entry
+Copy the existing `webapp-template/secrets.yaml` and replace `<tenant-slug>` with the actual tenant slug.
 
-**Critical secrets that MUST exist in Proton:**
+**Critical secrets that MUST exist in the per-app Proton vault (`<tenant-slug>`):**
 
-| Proton path | Why |
-|---|---|
-| `Projekt <Tenant>/Database/{username,password,database_name,host}` | DB connection |
-| `Projekt <Tenant>/Django/{secret_key,debug}` | Django settings + S40-assertion |
-| `Projekt <Tenant>/Mail/{host,port,user,password}` | Email backend (S40-assertion) |
-| `Projekt <Tenant>/API-Keys/<as-needed>` | App-specific API keys |
-| `Projekt Webapp-Management/Infrastructure-Access {server}/ssh_*` | SSH per-server-template (cross-tenant) |
-| `Projekt Webapp-Management/Cloudflare API/ts_oauth_*` | Tailscale CI auth (cross-tenant) |
-| `Projekt Webapp-Management/Traefik/kuma_automation_*` | Kuma sync (cross-tenant) |
-| `Projekt Webapp-Management/Kuma-Access/ssh_*` | Kuma SSH-Tunnel (cross-tenant) |
+| Proton path | GitHub Secret key | Notes |
+|---|---|---|
+| `proton://<tenant-slug>/django/secret_key` | `DJANGO_SECRET_KEY` | Generate fresh with `python -c "import secrets; print(secrets.token_urlsafe(50))"` |
+| `proton://<tenant-slug>/database/password` | `DB_PASSWORD` | DB password; username/name/host go in `project.yaml app_env` |
+| `proton://<tenant-slug>/mail/password` | `EMAIL_PASSWORD` | SMTP password; host/port/user go in `project.yaml app_env` |
+| `proton://<tenant-slug>/social-auth/google_secret` | `GOOGLE_SECRET` | Only if app uses Google OAuth |
+| `proton://<tenant-slug>/social-auth/microsoft_secret` | `MICROSOFT_SECRET` | Only if app uses Microsoft OAuth |
 
-**Critical secrets that should NOT be in `secrets.yaml`** (deprecated/removed in 2026):
-- `SYNC_SHARED_SECRET` -- removed via S71 cleanup. Do not re-add.
+**Shared secrets already in `webapp-management` vault (do NOT recreate — reference as-is):**
+
+| Proton path | GitHub Secret key | Notes |
+|---|---|---|
+| `proton://webapp-management/ci-tokens/ts_oauth_client_id` | `TS_OAUTH_CLIENT_ID` | Shared Tailscale OAuth, all apps |
+| `proton://webapp-management/ci-tokens/ts_oauth_secret` | `TS_OAUTH_SECRET` | |
+| `proton://webapp-management/monitoring/kuma_automation_user` | `KUMA_AUTOMATION_USER` | Shared Kuma automation user |
+| `proton://webapp-management/monitoring/kuma_automation_password` | `KUMA_AUTOMATION_PASSWORD` | |
+| `proton://webapp-management/shared-api-keys/mui_license` | `VITE_APP_MUI_LICENSE_KEY` | MUI X license, all apps |
+| `proton://webapp-management/shared-api-keys/deepl_api` | `DEEPL_API_KEY` | DeepL translation API -- add only if the app uses DeepL |
+
+**Critical secrets that should NOT be in `secrets.yaml`** (deprecated/removed):
+- `SYNC_SHARED_SECRET` -- removed via S71. Do not re-add.
+- `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`, `KUMA_SSH_*` -- removed; deploy uses Tailscale-SSH keyless. Do not re-add.
 
 **PAUSE POINT:** Verify all Proton-Pass entries exist before continuing. If missing, ask the
 human-operator to create the vault structure.
@@ -692,7 +1129,7 @@ gh run watch
 ssh deploy@<tenant-env>.<your-tailnet-domain> "docker ps --filter name=<tenant-slug> --format '{{.Names}} {{.Status}}'"
 
 # Smoke-test HTTPS endpoint
-curl -I https://<tenant-slug>.bigler-consult.ch/api/auth/_allauth/browser/v1/auth/session
+curl -I https://<tenant-slug>.<your-domain>/api/auth/_allauth/browser/v1/auth/session
 # Expected: HTTP/2 200 (or 401 if no session) -- NOT 502 or 503
 ```
 
@@ -701,7 +1138,7 @@ curl -I https://<tenant-slug>.bigler-consult.ch/api/auth/_allauth/browser/v1/aut
 The agent MUST execute these post-deploy security verifications:
 
 ```bash
-DOMAIN="<tenant-slug>.bigler-consult.ch"
+DOMAIN="<tenant-slug>.<your-domain>"
 
 # S6: sec-headers present
 curl -sI "https://$DOMAIN" | grep -iE "strict-transport-security|x-frame-options|x-content-type-options|referrer-policy"
@@ -875,7 +1312,7 @@ Fix: Tailscale admin → ACL → Edit JSON → add to `ssh:` section.
 
 ### Cloudflared tunnel connection offline
 
-Symptom: `curl https://<tenant>.bigler-consult.ch` returns 502.
+Symptom: `curl https://<tenant>.<your-domain>` returns 502.
 
 Diagnosis:
 
@@ -929,18 +1366,15 @@ Symptom: Traefik or cloudflared cannot resolve hostname; `dig` returns NXDOMAIN.
 Fix: Wait 5--10 min after setting the CNAME/A record. Use `dig @1.1.1.1 <hostname>` to
 query Cloudflare's resolver directly. Verify the record type (CNAME for tunneled, A for direct).
 
-### SSH_PRIVATE_KEY_ROOT missing
+### ansible-provision.yml fails to connect (fresh server)
 
-Symptom: `ansible-provision.yml` fails to connect to the server.
+Symptom: SSH connection refused or timeout on first run.
 
-Fix: Add the value to `secrets.values.yaml`, re-run `sync-secrets --server`, re-run the
-provisioning workflow.
+Cause: Fresh server -- `provision` user and Tailscale not yet installed.
 
-### Wrong server IP
-
-Symptom: All workflows time out.
-
-Fix: Update `SSH_HOST` in `secrets.values.yaml`, re-run `sync-secrets`, retry.
+Fix: Run the first-time bootstrap manually as described in A.5 (operator local run with
+`--extra-vars ansible_host=<public-ip> ansible_user=root`). After the first run
+completes, the CI workflow will connect via Tailscale-SSH as `provision`.
 
 ---
 
