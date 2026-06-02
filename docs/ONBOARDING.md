@@ -175,7 +175,7 @@ For each new server (`<target>` = inventory target name, e.g. `staging`, `main-p
    | `domain_traefik` | e.g. `traefik.<your-domain>` | Your DNS setup |
    | `domain_kuma` | e.g. `status.<your-domain>` (only on the monitoring server) | Your DNS setup |
 
-   **Monitoring server only:** add a second Proton item `server-monitoring` with an extra field:
+   **Monitoring server only:** add a `server-monitoring` item to the **`webapp-management` vault** (same vault as all other server-* items — NOT a new vault) with an extra field:
    | Field | Value |
    |---|---|
    | `grafana_admin_password` | Strong random password for Grafana admin user |
@@ -610,7 +610,8 @@ The workflow takes ~3--5 minutes for a fresh host. Expected role activity:
 - UFW configuration (deny incoming, allow 22/80/443 -- see note below)
 - fail2ban setup
 - Promtail install (log shipper → Loki on monitoring host)
-- Directory structure under `/srv/`
+- Swap configuration (`swap` role)
+- Directory structure under `/srv/` (`srv_dirs` role)
 
 > **About `22/tcp` staying open**: provisioning leaves public-internet SSH (`22/tcp`) open
 > by design. This is the **break-glass path** while Tailscale-SSH is unproven on the new server.
