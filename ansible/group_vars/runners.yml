@@ -1,0 +1,79 @@
+---
+# Group vars for the `runners` inventory group.
+#
+# Provisioned via AUTONOMOUS CI: ansible-provision workflow,
+# target=runners, environment `runners` (GitHub Environment).
+# Connection: keyless Tailscale-SSH as `provision` user (tag:ci-provision).
+#
+# Secrets are exposed as env vars by the ansible-provision workflow from the
+# `runners` GitHub Environment Secrets (populated via sync-secrets →
+# GH Environment Secrets). All lookup('env', ...) calls run on the Ansible
+# controller (= CI runner), so secret values never appear in inventory files
+# or CLI -e flags.
+#
+# ERSTLAUF-BOOTSTRAP is operator-triggered, NOT CI — see site.yml runner play
+# header for the manual ansible-playbook command.
+
+# ── Default tailscaled: install-only ─────────────────────────────────────────
+# The default tailscaled instance is installed but NOT registered in the tailnet.
+# Kept empty so per-job tailscale/github-action can `tailscale up` ephemerally
+# (job membership). The mgmt instance (tailscale_mgmt role) holds the permanent
+# tag:ci-runner-host registration.
+tailscale_authkey: ""
+tailscale_advertise_tags: []
+# Do NOT enable Tailscale-SSH on the default daemon — the mgmt instance handles
+# tailscale SSH for operator/CI access.
+tailscale_ssh: false
+
+# ── Tailscale mgmt instance ───────────────────────────────────────────────────
+# Auth-key for the mgmt tailscaled instance (permanent, tag:ci-runner-host).
+# Populated from the `runners` GitHub Environment Secret TAILSCALE_MGMT_AUTH_KEY
+# (exposed as env var TAILSCALE_MGMT_AUTH_KEY by ansible-provision).
+tailscale_mgmt_authkey: "{{ lookup('env', 'TAILSCALE_MGMT_AUTH_KEY') }}"
+tailscale_mgmt_tag: "tag:YOUR-RUNNER-TAG"
+
+# ── Phased UFW rollout ────────────────────────────────────────────────────────
+# runner_ufw_tailnet_only controls whether public port 22 remains open.
+#
+# IMPORTANT — switch form, NOT an additive list. The biglerconsult.infra.ufw
+# role does NOT honour a per-item `when:` (its loop only reads from/port/proto/
+# comment), and it actively DELETES the unrestricted variant of any port that
+# also has a CIDR-scoped (`from:`) entry ("Remove unrestricted … superseded by
+# CIDR-scoped"). So a tailnet-scoped :22 and an open public :22 cannot coexist.
+# We therefore SWITCH the single :22 entry between the two modes:
+#   tailnet_only=false (bootstrap): unrestricted :22 (no `from`) → public + tailnet
+#   tailnet_only=true  (lockdown):  tailnet-scoped :22 → the role's cleanup drops
+#                                   the unrestricted rule → public :22 closed
+#
+# PROCEDURE (never close public:22 in the same run that first brings up mgmt-TS):
+#   Phase 1  runner_ufw_tailnet_only=false (default) → :22 reachable publicly +
+#            via tailnet; mgmt tailscaled comes up for the first time.
+#   Phase 2  Verify tailnet SSH: ssh root@<runner-host>-mgmt.{{ tailnet_domain }}
+#   Phase 3  Re-run with runner_ufw_tailnet_only=true (commit it to host_vars, or
+#            pass extra_vars `runner_ufw_tailnet_only=true`) → public:22 closed.
+#
+runner_ufw_tailnet_only: false
+
+ufw_allow_in: >-
+  {{ [{'from': '100.64.0.0/10', 'port': '22', 'proto': 'tcp', 'comment': 'ssh — tailnet only (S32)'}]
+     if (runner_ufw_tailnet_only | bool)
+     else [{'port': '22', 'proto': 'tcp', 'comment': 'ssh — bootstrap (public + tailnet)'}] }}
+
+# ── GitHub runner identity ────────────────────────────────────────────────────
+# Declared here (before requirements.yml SHA bump) so the post_task in site.yml
+# (tailscale set --operator=...) can reference the variable even before the
+# github_runner role is applied.
+github_runner_user: gh-runner
+
+# GitHub App credentials for runner registration.
+# Populated from `runners` GitHub Environment Secrets via env vars exposed by
+# ansible-provision (see .github/workflows/ansible-provision.yml).
+# Replace placeholders with your actual GitHub App configuration.
+github_runner_app_id: "{{ lookup('env', 'GH_RUNNER_APP_ID') }}"           # App ID: YOUR_GH_RUNNER_APP_ID
+github_runner_app_installation_id: "{{ lookup('env', 'GH_RUNNER_APP_INSTALLATION_ID') }}"  # Installation ID: YOUR_GH_RUNNER_INSTALLATION_ID
+github_runner_app_private_key: "{{ lookup('env', 'GH_RUNNER_APP_PRIVATE_KEY') }}"
+# SHA256 is the public checksum for the runner archive (not a secret).
+# Stored as a GH Environment var/secret for convenience so version + hash are
+# always updated together via sync-secrets.
+# Replace with the actual runner archive SHA256: YOUR_RUNNER_SHA256
+github_runner_sha256: "{{ lookup('env', 'GH_RUNNER_SHA256') }}"

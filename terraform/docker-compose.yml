@@ -1,0 +1,18 @@
+services:
+  tf:
+    image: hashicorp/terraform:1.9
+    env_file:
+      - ../.env.local
+    volumes:
+      - ./:/workspace
+      - terraform-plugin-cache:/root/.terraform.d/plugin-cache
+    working_dir: /workspace
+    environment:
+      # Terraform Cloud Auth (Backend State)
+      - TF_TOKEN_app_terraform_io=${TF_CLOUD_TOKEN}
+      # Terraform Input Variables (lowercase TF_VAR_ prefix)
+      - TF_VAR_cloudflare_api_token=${CLOUDFLARE_API_TOKEN}
+      - TF_VAR_cloudflare_account_id=${CLOUDFLARE_ACCOUNT_ID}
+
+volumes:
+  terraform-plugin-cache:

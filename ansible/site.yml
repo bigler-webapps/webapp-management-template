@@ -1,7 +1,15 @@
 ---
 - name: Provision Ansible-managed servers
-  hosts: all
+  # runners are excluded: they have their own play at the bottom of this file
+  # with a different role set (tailscale_mgmt + github_runner; no srv_dirs,
+  # swap, promtail, or the deploy-user set that only makes sense on app servers).
+  hosts: all:!runners
   gather_facts: true
+  # Play-level become: the CI connection user is `provision` (Tailscale-SSH
+  # keyless, tag:ci-provision) which sudos to root via NOPASSWD:ALL. No-op
+  # when connecting as root (fresh-host bootstrap / operator break-glass).
+  # The local-file pre_task below explicitly overrides to become:false.
+  become: true
 
   pre_tasks:
     # Read every committed deploy/infrastructure pubkey and build the
@@ -21,23 +29,37 @@
     - biglerconsult.infra.base
     - biglerconsult.infra.docker
     - biglerconsult.infra.deploy_user
+    # Second deploy_user invocation: the `provision` CI identity with full
+    # passwordless sudo (own sudoers file 91-provision-full, distinct from
+    # deploy's 90-webapp-maintenance). Used ONLY by the ansible-provision
+    # workflow (Tailscale-SSH tag:ci-provision). No docker group and no
+    # authorized_keys — Tailscale-SSH authorises the CI node via the tailnet
+    # ACL, so the user only needs to exist + sudo. Lets us drop the standing
+    # SSH_PRIVATE_KEY_ROOT CI secret (provisioning auth no longer key-based).
+    - role: biglerconsult.infra.deploy_user
+      vars:
+        deploy_user_name: provision
+        deploy_user_sudo_commands: ALL
+        deploy_user_sudoers_filename: 91-provision-full
+        deploy_user_additional_groups: []
+        deploy_user_authorized_keys: []
     - biglerconsult.infra.ufw
     - biglerconsult.infra.fail2ban
     - biglerconsult.infra.tailscale
     - srv_dirs
+    - biglerconsult.infra.swap
+    - biglerconsult.infra.promtail
 
   post_tasks:
     # Append committed root pubkeys. Uses exclusive=false so the bootstrap
-    # keys (Hetzner-UI-injected pubkey and the CI root key already on the
-    # host) are preserved alongside the managed access/root/*.pub set.
-    # The legacy sync-ssh-access composite REPLACES root authorized_keys;
-    # this playbook intentionally appends to avoid first-run SSH lockout.
+    # key (injected pubkey) is preserved alongside the managed
+    # access/root/*.pub set, and appending avoids first-run SSH lockout.
     #
-    # OPERATOR WARNING: do not switch to exclusive=true until the CI key
-    # currently used by the GitHub Actions workflow
-    # (secret SSH_PRIVATE_KEY_ROOT) is verified to match a pubkey present
-    # in access/root/. Otherwise the next playbook run would remove the
-    # CI's own login path and lock the workflow out permanently.
+    # Root SSH is now a HUMAN break-glass path only (operators via
+    # access/root/*.pub, over Tailnet or public-IP for fresh-host bootstrap).
+    # CI provisioning no longer logs in as root — ansible-provision connects
+    # as `provision` via Tailscale-SSH (tag:ci-provision) and sudos. Keep
+    # exclusive=false so a run never removes an operator's break-glass key.
     - name: Sync root authorized_keys from access/root/*.pub
       become: true
       ansible.posix.authorized_key:
@@ -46,3 +68,114 @@
         state: present
         exclusive: false
       loop: "{{ query('ansible.builtin.fileglob', playbook_dir + '/../access/root/*.pub') }}"
+
+# S214 — Loki + Grafana run on the dedicated `monitoring` host (central log
+# collector), kept off the churny staging box for observability independence.
+# Promtail on all servers ships logs here via Tailscale. Trust boundary
+# is the Tailnet: no TLS/auth between Promtail and Loki, no public port.
+- name: Provision Loki + Grafana on the monitoring host
+  hosts: monitoring
+  gather_facts: true
+
+  roles:
+    - biglerconsult.infra.loki
+
+  tasks:
+    # Expose Kuma (binds 127.0.0.1:3001) on the tailnet at :8443 so CI
+    # (register-kuma-monitors) can reach it via KUMA_URL
+    # (https://monitoring.{{ tailnet_domain }}:8443). The serve config is persisted
+    # by tailscaled but used to be a manual one-off on the old box — automating
+    # it here ensures it survives host rebuilds (root cause of the post-migration
+    # "Kuma not reachable" break). tailscale serve dedupes identical config, so
+    # this is idempotent; runs regardless of whether the kuma container is up yet
+    # (serve only configures the proxy mapping).
+    - name: Serve Kuma over Tailscale HTTPS on :8443 (CI register-kuma path)
+      become: true
+      ansible.builtin.command:
+        cmd: tailscale serve --bg --https=8443 http://127.0.0.1:3001
+      changed_when: false
+
+# ─── Runner-host provisioning ─────────────────────────────────────────────────
+# GATED: this play requires biglerconsult.infra.tailscale_mgmt and
+# biglerconsult.infra.github_runner roles which are not yet present in
+# requirements.yml at the current SHA.
+# TODO: bump requirements.yml SHA after workflow-templates PRs are merged
+# (see ansible/requirements.yml GATED comment).
+#
+# Provisioned AUTONOMOUSLY via CI: ansible-provision workflow, target=runners,
+# GitHub Environment `runners`, connection user `provision` over Tailscale-SSH
+# (tag:ci-provision → tag:ci-runner-host as provision, keyless).
+#
+# ERSTLAUF-BOOTSTRAP (operator-only, NOT CI):
+#   ansible-playbook site.yml --inventory inventory/hosts.yml \
+#     --limit <runner-host> -u root
+# from a Linux/WSL admin machine in the Tailnet (tailnet ACL:
+# autogroup:admin → tag:ci-runner-host as root, keyless).
+# This first run creates the provision user, dual-tailscaled setup, and
+# github_runner. Only after bootstrap does autonomous CI take over as provision.
+#
+# UFW phased rollout (runner_ufw_tailnet_only in group_vars/runners.yml):
+#   Phase 1  target=runners (runner_ufw_tailnet_only=false)
+#            → public:22 + tailnet:22 open, mgmt tailscale comes up
+#   Phase 2  verify: ssh root@<runner-host>-mgmt.{{ tailnet_domain }}
+#   Phase 3  re-run with runner_ufw_tailnet_only=true (via extra_vars)
+#            → public:22 closed, tailnet:22 only
+#   NEVER close public:22 in the same run that first brings up mgmt-TS.
+- name: Provision runner hosts
+  hosts: runners
+  gather_facts: true
+  # Play-level become: CI connects as `provision` (Tailscale-SSH keyless,
+  # tag:ci-provision) which sudos to root via NOPASSWD:ALL.
+  # No-op when connecting as root (operator bootstrap / break-glass).
+  become: true
+
+  roles:
+    - biglerconsult.infra.base
+    - biglerconsult.infra.docker
+    # provision user: identical to the server-play variant so that autonomous
+    # CI (tag:ci-provision → tag:ci-runner-host as provision) can connect and
+    # sudo. No authorized_keys — Tailscale-SSH handles auth via tailnet ACL.
+    - role: biglerconsult.infra.deploy_user
+      vars:
+        deploy_user_name: provision
+        deploy_user_sudo_commands: ALL
+        deploy_user_sudoers_filename: 91-provision-full
+        deploy_user_additional_groups: []
+        deploy_user_authorized_keys: []
+    - biglerconsult.infra.ufw
+    - biglerconsult.infra.fail2ban
+    # Default tailscaled: install-only (tailscale_authkey="" in group_vars).
+    # Does NOT register in the tailnet on its own — that is intentional.
+    # The mgmt instance (tailscale_mgmt role) registers as tag:ci-runner-host.
+    - biglerconsult.infra.tailscale
+    # NOTE: biglerconsult.infra.tailscale_mgmt is DELIBERATELY NOT here.
+    # This play runs via AUTONOMOUS CI connected through the mgmt tailscaled's
+    # Tailscale-SSH. The tailscale_mgmt role re-deploys + RESTARTS that daemon,
+    # which would kill CI's own connection (self-disruption) and re-render the
+    # unit. The mgmt instance is established ONCE by the operator bootstrap
+    # (runner-bootstrap.yml, via public-IP root) and must not be touched here.
+    - biglerconsult.infra.github_runner
+
+  post_tasks:
+    # Operator break-glass root: append committed root pubkeys so that
+    # autogroup:admin → tag:ci-runner-host as root (Tailnet) and public-IP
+    # bootstrap both work. exclusive=false preserves bootstrap keys.
+    - name: Sync root authorized_keys from access/root/*.pub
+      become: true
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ lookup('file', item) | trim }}"
+        state: present
+        exclusive: false
+      loop: "{{ query('ansible.builtin.fileglob', playbook_dir + '/../access/root/*.pub') }}"
+
+    # Allow the github_runner_user to control the DEFAULT tailscaled without
+    # sudo. This enables the per-job tailscale/github-action (running as
+    # gh-runner) to call `tailscale up` / `tailscale down` on the default
+    # daemon for ephemeral tailnet membership during job execution.
+    # The mgmt-instance (tailscale_mgmt role) is unaffected — it runs as a
+    # separate daemon with its own socket and is NOT touched by this operator.
+    - name: Allow github_runner_user to control default tailscaled without sudo
+      become: true
+      ansible.builtin.command: "tailscale set --operator={{ github_runner_user }}"
+      changed_when: true

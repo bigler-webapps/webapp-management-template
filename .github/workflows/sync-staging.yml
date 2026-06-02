@@ -1,0 +1,190 @@
+name: Sync Staging (cross-server restore)
+
+# Replaces the legacy same-server `sync_staging` step in backup.yml. For each
+# inventory target's sync_staging_apps, copies production data into the
+# corresponding _stage compose project on the dedicated staging server.
+#
+# Scheduled to run after the nightly backup (02:25 UTC) so it picks up fresh
+# Restic snapshots; can also be triggered manually for individual apps.
+#
+# Architecture mirrors backup.yml: matrix jobs call the cross-org composites
+# directly (no cross-org reusable workflow_call, which would block env-scoped
+# secrets from flowing into the called workflow). The composites live in
+# YOUR_GITHUB_ORG/workflow-templates; this file is just the choreography.
+
+on:
+  # Auto-trigger after the nightly backup workflow finishes. Per-target
+  # granularity: if backup for main-prod failed but contact-prod + innoservice-prod
+  # succeeded, sync-staging still runs for the 2 successful targets. Targets
+  # whose backup failed are filtered out of the matrix in the resolve job.
+  workflow_run:
+    workflows: ["Backup, Verify & Sync"]
+    types: [completed]
+
+  workflow_dispatch:
+    inputs:
+      app_filter:
+        description: 'Optional: restrict run to a single app name (e.g. myapp). Empty = all apps from inventory.'
+        required: false
+        type: string
+        default: ''
+
+concurrency:
+  # Single sync-staging at a time; queued runs cancel-in-progress=false ensures
+  # full restore cycles run to completion even if a new schedule fires.
+  group: sync-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    # On workflow_run trigger: skip if backup was cancelled (no useful state).
+    # Failure is OK — we filter the matrix per-target.
+    # Manual workflow_dispatch always runs.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'cancelled')
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to read the triggering backup-run's per-job statuses.
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      # Fetch which backup targets succeeded in the triggering run. Job names
+      # in backup.yml have the form "full-backup-cycle (<target>, …)" — we
+      # extract the first matrix param to build the succeeded-targets set.
+      # Only runs when triggered by workflow_run; no-op for manual dispatch.
+      - id: succeeded_targets
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BACKUP_RUN_ID: ${{ github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Triggering backup run id: ${BACKUP_RUN_ID}"
+          # gh api failure (expired token / rate-limit / network) hard-fails the
+          # step here via command substitution under `set -e` — distinct from the
+          # legitimate "zero matching jobs" case, which the empty-file check below
+          # surfaces as a ::warning::.
+          names="$(gh api "repos/${REPO}/actions/runs/${BACKUP_RUN_ID}/jobs" --paginate \
+            --jq '.jobs[] | select(.conclusion=="success") | .name')"
+          # Display names: "full-backup-cycle (<target>, <compose_profile>, ...)" —
+          # <target> is first (resolve_inventory_targets.py emits `target` first).
+          # Portable sed (POSIX ERE; grep -oP lookbehind is locale-fragile); strip
+          # leading + trailing whitespace from the captured field.
+          printf '%s\n' "$names" \
+            | sed -nE 's/^full-backup-cycle \(([^,]+).*/\1/p' \
+            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+            | sort -u > /tmp/succeeded_targets.txt || true
+          if [ -s /tmp/succeeded_targets.txt ]; then
+            echo "Succeeded backup targets:"
+            sed 's/^/  - /' /tmp/succeeded_targets.txt
+          else
+            echo "::warning::No succeeded backup targets parsed from run ${BACKUP_RUN_ID} — staging sync will skip all targets."
+          fi
+
+      - id: matrix
+        env:
+          APP_FILTER: ${{ inputs.app_filter }}
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARGS=()
+          if [ -n "${APP_FILTER:-}" ]; then
+            printf '%s' "$APP_FILTER" | grep -qE '^[a-zA-Z0-9_-]+$' || {
+              echo "❌ Invalid app_filter: '$APP_FILTER'"
+              exit 1
+            }
+            ARGS+=(--app-filter "$APP_FILTER")
+          fi
+          # On workflow_run: filter the matrix to source-targets whose
+          # backup-job succeeded. Empty result → downstream matrix-job runs
+          # zero instances (GH behaviour) → workflow ends cleanly.
+          if [ "$EVENT_NAME" = "workflow_run" ] && [ -f /tmp/succeeded_targets.txt ]; then
+            ARGS+=(--filter-succeeded-file /tmp/succeeded_targets.txt --allow-empty)
+          fi
+          M="$(python3 .github/scripts/resolve_sync_staging_matrix.py "${ARGS[@]}")"
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+          echo "Resolved matrix:"
+          echo "$M" | python3 -m json.tool
+
+  source_export:
+    needs: resolve
+    # Skip when the resolved matrix is empty (e.g. backup workflow_run with
+    # zero succeeded targets). GH refuses to start a matrix job with no
+    # vectors, so we gate the job on the matrix having at least one entry.
+    if: ${{ fromJson(needs.resolve.outputs.matrix).include[0] != null }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    # Env-scoped B2/RESTIC secrets flow in via the source target's GH env.
+    environment: ${{ matrix.source }}
+    steps:
+      # restore-source-export does NOT SSH (pulls restic from B2 on the runner).
+      # No Tailnet inputs needed; safe to stay on the latest v1.x.
+      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-source-export@v2.0.3
+        with:
+          source_target: ${{ matrix.source }}
+          app_name: ${{ matrix.app }}
+          source_env: production
+          restic_repo_b2: ${{ secrets.RESTIC_REPO_B2 }}
+          restic_password: ${{ secrets.RESTIC_PASSWORD }}
+          b2_key_id: ${{ secrets.B2_KEY_ID }}
+          b2_app_key: ${{ secrets.B2_APP_KEY }}
+          transport_key: ${{ secrets.CROSS_SERVER_TRANSPORT_KEY }}
+
+  dest_import:
+    needs: [resolve, source_export]
+    if: ${{ fromJson(needs.resolve.outputs.matrix).include[0] != null }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    # Env-scoped SSH secrets flow in via the staging GH env.
+    environment: staging
+    permissions:
+      # actions:write lets the composite delete the handoff artifact at end of run.
+      # contents:read is the default for the checkout step.
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout webapp-ops-scripts
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          repository: YOUR_GITHUB_ORG/webapp-ops-scripts
+          # Pinned to the webapp-ops-scripts commit that introduced
+          # dump-only / import-only modes. Bump deliberately after re-review.
+          ref: c47d6ba3e36497d28b96c867d8677aacb1a356cb
+          path: ops-scripts
+
+      # restore-dest-import SSHes to staging; Tailnet path active.
+      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-dest-import@v2.0.3
+        with:
+          dest_target: staging
+          app_name: ${{ matrix.app }}
+          dest_subtarget: staging
+          auto_restart: 'true'
+          dest_compose_path: /srv/apps/${{ matrix.app }}_stage
+          # v2.0.0: Tailscale-SSH-only — no ssh_private_key.
+          ssh_host: staging.your-tailnet-domain
+          ssh_user: deploy
+          # Artifact name is generated deterministically by restore-source-export
+          # as xrestore-{run_id}-{run_attempt}-{source_target}-{app_name}. We
+          # reconstruct it here from the same inputs so the two matrix jobs
+          # don't need a cross-job output channel.
+          artifact_name: xrestore-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.source }}-${{ matrix.app }}
+          transport_key: ${{ secrets.CROSS_SERVER_TRANSPORT_KEY }}
+          ops_scripts_path: ops-scripts
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts_oauth_secret: ${{ secrets.TS_OAUTH_SECRET }}

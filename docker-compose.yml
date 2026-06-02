@@ -1,10 +1,11 @@
 # Traefik infrastructure stack — minimal viable
 #
 # Includes:
-#   - Traefik v3.6 (reverse proxy, Let's Encrypt, web dashboard with BasicAuth)
+#   - Traefik v3.6 (reverse proxy, Cloudflare Origin Certs, web dashboard via CF Access)
 #   - Uptime Kuma (heartbeat monitoring)
-#   - Watchtower (image updates, monitor-only by default)
-#   - Two docker-socket-proxy instances (one for Traefik, one for Watchtower)
+#   - Cloudflare Tunnel (outbound CF edge connection)
+#   - Two docker-socket-proxy instances (one for Traefik, one for Autoheal)
+#   - Autoheal (automatic restart of unhealthy containers)
 #
 # NOT included (intentionally minimal — add later if you adopt them):
 #   - WireGuard (replaced by Tailscale on host; see ARCHITECTURE.md).
@@ -29,6 +30,7 @@ services:
   traefik:
     image: traefik:v3.6
     container_name: traefik
+    profiles: ["main", "staging", "monitoring"]
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -42,6 +44,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - ./acme.json:/acme.json
       - ./dynamic:/etc/traefik/dynamic:ro
+      - ./certs:/etc/traefik/certs:ro
     networks:
       - proxy
     command:
@@ -58,11 +61,16 @@ services:
       - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
       - "--entrypoints.websecure.address=:443"
       - "--entrypoints.websecure.http.tls.options=default"
+      # Trust X-Forwarded-* only from the traefik_proxy bridge subnet (internal hops).
+      # Only set on websecure; web entrypoint only redirects to websecure and never serves middleware-protected routes.
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=192.168.220.0/24"
       # SSL via Let's Encrypt TLS-ALPN challenge
       - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
       - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
       - "--certificatesresolvers.myresolver.acme.storage=/acme.json"
-      # Dashboard (secured below via BasicAuth + rate-limit + sec-headers)
+      # Access logs to stdout so log collectors pick them up via Docker socket.
+      - "--accesslog=true"
+      # Dashboard (secured below via CF Access + rate-limit + sec-headers)
       - "--api.dashboard=true"
     labels:
       - "traefik.enable=true"
@@ -73,20 +81,25 @@ services:
       - "traefik.http.middlewares.sec-headers.headers.customResponseHeaders.X-Frame-Options=SAMEORIGIN"
       - "traefik.http.middlewares.sec-headers.headers.customResponseHeaders.X-Content-Type-Options=nosniff"
       - "traefik.http.middlewares.sec-headers.headers.customResponseHeaders.Referrer-Policy=strict-origin-when-cross-origin"
-      # BasicAuth for the dashboard
+      # BasicAuth middleware definition kept as rollback option — NOT wired to
+      # the dashboard router. Auth layer is CF Access. To reinstate BasicAuth:
+      # append `,traefik-auth` to the middlewares line below.
       - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH}"
       # Dashboard router
-      # NOTE: minimal viable uses BasicAuth + sec-headers + rate-limit.
-      # If you adopt VPN later, add `vpn-only@file` to the middlewares list.
+      # NOTE: Auth via CF Access -- traefik-auth kept as rollback middleware, not wired
       - "traefik.http.routers.traefik-dashboard.rule=Host(`${DOMAIN_TRAEFIK}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
       - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
       - "traefik.http.routers.traefik-dashboard.tls.certresolver=myresolver"
       - "traefik.http.routers.traefik-dashboard.service=api@internal"
-      - "traefik.http.routers.traefik-dashboard.middlewares=sec-headers,dashboard-ratelimit@file,traefik-auth"
+      - "traefik.http.routers.traefik-dashboard.middlewares=sec-headers,dashboard-ratelimit@file"
+      # Sync rate-limit middleware (used by webhook/sync endpoints)
+      - "traefik.http.middlewares.sync-limit.ratelimit.average=50"
+      - "traefik.http.middlewares.sync-limit.ratelimit.burst=100"
 
   uptime-kuma:
     image: louislam/uptime-kuma:2
     container_name: uptime-kuma
+    profiles: ["monitoring"]
     restart: unless-stopped
     volumes:
       - ./uptime-kuma-data:/app/data
@@ -107,16 +120,33 @@ services:
       - "traefik.http.routers.kuma.tls.certresolver=myresolver"
       # NOTE: minimal viable exposes Kuma to the internet behind its own auth.
       # If you adopt VPN later, add `vpn-only@file` to restrict.
-      - "traefik.http.routers.kuma.middlewares=sec-headers"
+      # kuma-ratelimit caps brute-force attempts against Kuma's built-in login;
+      # keyed on CF-Connecting-IP so each real client gets its own bucket.
+      - "traefik.http.middlewares.kuma-ratelimit.ratelimit.average=60"
+      - "traefik.http.middlewares.kuma-ratelimit.ratelimit.burst=30"
+      - "traefik.http.middlewares.kuma-ratelimit.ratelimit.period=1m"
+      - "traefik.http.middlewares.kuma-ratelimit.ratelimit.sourceCriterion.requestHeaderName=Cf-Connecting-Ip"
+      - "traefik.http.routers.kuma.middlewares=sec-headers,kuma-ratelimit"
       - "traefik.http.services.kuma.loadbalancer.server.port=3001"
 
-  # Watchtower has been retired. Image updates are driven by Renovate (pin-bump
-  # PRs against this repo) rather than by host-side auto-pulls. With pinned
-  # tags + Renovate the previous watchtower setup was a no-op anyway.
+  # Cloudflare Tunnel — outbound connection to CF edge, routes app hostnames.
+  # Token injected via secrets.yaml -> .env from secret store.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    profiles: ["main", "staging", "monitoring"]
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - proxy
 
+  # Socket Proxy for Traefik (read-only docker.sock exposure).
   docker-socket-proxy-traefik:
-    image: tecnativa/docker-socket-proxy:0.3
+    image: tecnativa/docker-socket-proxy:v0.4.2
     container_name: docker-socket-proxy-traefik
+    profiles: ["main", "staging", "monitoring"]
     restart: unless-stopped
     environment:
       CONTAINERS: "1"
@@ -128,7 +158,51 @@ services:
     networks:
       - proxy
 
+  # Socket Proxy for Autoheal (write access via API, NOT direct socket mount).
+  # autoheal needs CONTAINERS=1 + POST=1 (POST /containers/{id}/restart).
+  # The proxy restricts the rest of the Docker API surface.
+  docker-socket-proxy-autoheal:
+    image: tecnativa/docker-socket-proxy:v0.4.2
+    container_name: docker-socket-proxy-autoheal
+    profiles: ["main", "staging"]
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      POST: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - autoheal-net
+
+  # Autoheal: automatically restarts unhealthy containers.
+  # LABEL-based opt-in via `autoheal=true` label on app containers.
+  autoheal:
+    image: willfarrell/autoheal
+    container_name: autoheal
+    profiles: ["main", "staging"]
+    restart: unless-stopped
+    depends_on:
+      - docker-socket-proxy-autoheal
+    environment:
+      # "label" = only watch containers with label `autoheal=true`.
+      AUTOHEAL_CONTAINER_LABEL: "autoheal"
+      AUTOHEAL_INTERVAL: "10"
+      AUTOHEAL_START_PERIOD: "60"
+      AUTOHEAL_DEFAULT_STOP_TIMEOUT: "10"
+      # Route Docker API through TCP socket proxy instead of direct socket mount.
+      DOCKER_SOCK: "tcp://docker-socket-proxy-autoheal:2375"
+    networks:
+      - autoheal-net
+
+  # Watchtower has been retired. Image updates are driven by Renovate (pin-bump
+  # PRs against this repo) rather than by host-side auto-pulls. With pinned
+  # tags + Renovate the previous watchtower setup was a no-op anyway.
+
 networks:
   proxy:
     name: traefik_proxy
     external: true
+  autoheal-net:
+    # Internal-only network: autoheal + docker-socket-proxy-autoheal talk to
+    # each other over TCP, no external routes.
+    internal: true

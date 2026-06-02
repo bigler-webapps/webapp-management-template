@@ -5,11 +5,12 @@ Tenant (eigenes `webapp-management` + 1+ App, z.B. Photogallery) auf den
 heutigen Stand des bigler-webapps Platform-Layers bringt.
 
 **Referenz-Quelle für "current state":**
-- Platform-Repo: `MichaBigler/webapp-management:main`
+- Platform-Repo: `MichaBigler/webapp-management:main` (Persoenliches Platform-Repo des Operators)
 - Template: `bigler-webapps/webapp-management-template:main` (= dieses Repo)
 - App-Template: `bigler-webapps/webapp-template:main`
 - Shared Renovate: `bigler-webapps/renovate-config:main`
-- Libs: `django-core-micha==2.9.4`, `@micha.bigler/ui-core-micha@2.4.0`
+- Libs: match current webapp-template pin (backend/requirements.txt at HEAD),
+  match current webapp-template pin (frontend/package.json at HEAD)
 
 **Annahme zum Ausgangszustand des Tenants:**
 - `webapp-management` Klon noch ohne: shared-Renovate, update-server-Workflow,
@@ -17,11 +18,11 @@ heutigen Stand des bigler-webapps Platform-Layers bringt.
   concurrency-group in Deploy-Workflows, flock in deploy-app
 - App (Photogallery o.ä.): Django <6, vite 7, vitest <4, pnpm <11, i18next 25,
   react-i18next 16, ggf. `reportWebVitals.js`, `gunicorn` als dead-dep,
-  4 ungenutzte `@fontsource/*`-Fonts in `theme.js`, ältere `ui-core-micha`
+  4 ungenutzte `@fontsource/*`-Fonts in `theme.js`, aeltere `ui-core-micha`
 
 ---
 
-## Wichtige Vorab-Regeln für den Agent
+## Wichtige Vorab-Regeln fuer den Agent
 
 1. **Tier-2-Sicht**: Praktisch alle Schritte sind Tier 2 (Major-Bumps, Auth-Code,
    Security-relevante Konfig). Vor jedem Phase-Commit: lokal testen → reviewer-Pass → User-Approval.
@@ -74,22 +75,28 @@ find <app>/frontend/src -type f \( -name '*.jsx' -o -name '*.js' \) | \
 
 ## Phase 1 — Library-Pins synchron ziehen
 
-**Zuerst, weil App-Modernization auf 2.9.4 + 2.4.0 baut.**
+**Zuerst, weil App-Modernization auf die aktuellen Pins baut.**
 
+Lies die aktuellen Versions-Pins aus `webapp-template` HEAD:
+- Backend: `bigler-webapps/webapp-template/backend/requirements.txt` — `django-core-micha`-Zeile
+- Frontend: `bigler-webapps/webapp-template/frontend/package.json` — `@micha.bigler/ui-core-micha`-Eintrag
+
+Wende die gefundenen Pins auf die App an:
 ```bash
-# Backend
-sed -i 's|django-core-micha==.*|django-core-micha==2.9.4|' <app>/backend/requirements.txt
+# Backend — ersetze <CURRENT_PIN> mit dem aus webapp-template HEAD gelesenen Wert
+# z.B.: django-core-micha==<CURRENT_PIN>
 
-# Frontend
-sed -i 's|"@micha.bigler/ui-core-micha": ".*"|"@micha.bigler/ui-core-micha": "2.4.0"|' \
-  <app>/frontend/package.json
+# Frontend — ersetze <CURRENT_PIN> mit dem aus webapp-template HEAD gelesenen Wert
+# z.B.: "@micha.bigler/ui-core-micha": "<CURRENT_PIN>"
 ```
 
-**Kritisch:** `ui-core-micha 2.4.0` verschob `react-i18next` von `dependencies`
-nach `peerDependencies`. Ohne diesen Bump duplizieren sich i18next-Contexts
-zwischen App und Lib → Translations brechen sichtbar.
+> Niemals Versionsnummern hartkodieren — immer aus webapp-template HEAD lesen.
 
-Commit: `chore(deps): bump core libs to current pin (django-core-micha 2.9.4, ui-core-micha 2.4.0)`
+**Kritisch:** Neuere `ui-core-micha`-Versionen koennen `react-i18next` von `dependencies`
+nach `peerDependencies` verschieben. Ohne diesen Bump duplizieren sich i18next-Contexts
+zwischen App und Lib → Translations brechen sichtbar. Changelog beim Bumpen pruefen.
+
+Commit: `chore(deps): bump core libs to current webapp-template pin`
 
 ---
 
@@ -121,8 +128,8 @@ Commit: `chore(deps): bump core libs to current pin (django-core-micha 2.9.4, ui
 
 > Platform-Repos brauchen `baseBranches: ["main"]` Override (shared default ist `develop`).
 
-**Mend-Installation prüfen**: Tenant-Owner muss Mend GitHub App auf seinen
-Account und/oder Org installiert haben, sonst läuft Renovate nicht.
+**Mend-Installation pruefen**: Tenant-Owner muss Mend GitHub App auf seinen
+Account und/oder Org installiert haben, sonst laeuft Renovate nicht.
 
 Commit: `chore(renovate): onboard via shared bigler-webapps preset`
 
@@ -130,7 +137,10 @@ Commit: `chore(renovate): onboard via shared bigler-webapps preset`
 
 ## Phase 3 — App-Modernization (Photogallery o.ä.)
 
-**Backend `requirements.txt`:**
+> **Warnung: Die aufgefuehrten Versionsnummern waren korrekt zum Zeitpunkt der Dokumentenerstellung.**
+> **Lies die aktuellen Pins stets aus webapp-template HEAD — diese Tabelle dient nur als Referenz (moeglicherweise veraltet).**
+
+**Backend `requirements.txt` (Referenz-Versionen — aus webapp-template HEAD verifizieren):**
 ```
 Django>=5.0,<6.0      → Django==6.0.5
 gunicorn>=22.0        → DROP wenn Dockerfile CMD=daphne (typisch)
@@ -138,13 +148,13 @@ pytest                → pytest>=9.0
 pytest-django         → pytest-django>=4.12.0
 ```
 
-**Backend `Dockerfile`:**
+**Backend `Dockerfile` (Referenz-Versionen — aus webapp-template HEAD verifizieren):**
 - `FROM python:3.12-slim` → `FROM python:3.14-slim`
 - `corepack prepare pnpm@latest` → `corepack prepare pnpm@11.1.3 --activate` (Pin!)
 - `COPY frontend/package.json frontend/pnpm-lock.yaml ./` →
   `COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml frontend/.npmrc ./`
 
-**Frontend `package.json` — Major-Bumps:**
+**Frontend `package.json` — Major-Bumps (Referenz-Versionen — aus webapp-template HEAD verifizieren):**
 - vite 7 → 8.0.13
 - vitest <4 → 4.1.6
 - jsdom <29 → 29.1.1
@@ -160,13 +170,13 @@ pytest-django         → pytest-django>=4.12.0
 - Entfernen: `web-vitals` (CRA-Leftover, `reportWebVitals()` ist Dead-Code)
 - Entfernen: `eslintConfig`-Block (CRA, von Flat-Config `eslint.config.js` ersetzt)
 - Entfernen: `pnpm.onlyBuiltDependencies` (umzieht in `pnpm-workspace.yaml`)
-- Entfernen: ungenutzte `@fontsource/*`-Fonts — `theme.js` audit, nur tatsächlich
+- Entfernen: ungenutzte `@fontsource/*`-Fonts — `theme.js` audit, nur tatsaechlich
   in `fontFamily` referenzierte Fonts behalten. Latin-Subset: `import '@fontsource/dm-sans/latin-400.css'` statt bare `import '@fontsource/dm-sans'` (spart ~90% Payload).
 
 **Frontend NEU/RESTRUKTURIERT:**
 
 `frontend/eslint.config.js` (Flat-Config, falls noch nicht vorhanden):
-Übernehmen vom `webapp-template/frontend/eslint.config.js`.
+Uebernehmen vom `webapp-template/frontend/eslint.config.js`.
 
 `frontend/pnpm-workspace.yaml` (pnpm v11 Policy):
 ```yaml
@@ -178,7 +188,7 @@ minimumReleaseAgeExclude:
   - '@micha.bigler/ui-core-micha'
 ```
 
-`frontend/vite.config.mts` test-Block ergänzen falls fehlt:
+`frontend/vite.config.mts` test-Block ergaenzen falls fehlt:
 ```js
 test: {
   environment: 'jsdom',
@@ -190,7 +200,7 @@ test: {
 
 `frontend/src/setupTests.js`: `import '@testing-library/jest-dom/vitest';`
 
-**Dead-Code löschen** (User-Approval-pflichtig per Tier 2 — vorab fragen):
+**Dead-Code loeschen** (User-Approval-pflichtig per Tier 2 — vorab fragen):
 - `frontend/src/reportWebVitals.js`
 - `frontend/src/App.test.js` (alte Jest-Syntax) → ersetzen durch `App.test.jsx`
   mit Vitest-Sanity-Pattern aus `webapp-template`
@@ -201,9 +211,9 @@ test: {
   `import Heading from '@tiptap/extension-heading'` →
   `import { Heading } from '@tiptap/extension-heading'`
 - `setContent(content, false)` → `setContent(content, { emitUpdate: false })`
-- `useEditor({ ..., shouldRerenderOnTransaction: true, ... })` ergänzen
-  (v3-default ist false → MenuBar mit `isActive()` würde stale anzeigen)
-- `tiptap-extension-image-resize` prüfen — falls nicht in src/ importiert, raus
+- `useEditor({ ..., shouldRerenderOnTransaction: true, ... })` ergaenzen
+  (v3-default ist false → MenuBar mit `isActive()` wuerde stale anzeigen)
+- `tiptap-extension-image-resize` pruefen — falls nicht in src/ importiert, raus
 
 **Docker-Compose:**
 - `docker-compose.local.yml`: `redis:7-alpine` → `redis:8-alpine`
@@ -236,19 +246,19 @@ chore(modernize): django 6.0.5 + python 3.14, vite 8 / vitest 4 / pnpm 11 + i18n
 **4.1 Workflows angleichen** (Vergleich gegen
 `bigler-webapps/webapp-management-template/.github/workflows/`):
 
-Erwartete Workflows (alle übernehmen falls fehlend):
+Erwartete Workflows (alle uebernehmen falls fehlend):
 - `apply-rulesets.yml` (Branch-Protection-Sync)
-- `backup.yml` (tägliche Backups + Verify)
-- `deploy-traefik.yml` (Deploy auf Push to main, Matrix über Inventory)
+- `backup.yml` (taegliche Backups + Verify)
+- `deploy-traefik.yml` (Deploy auf Push to main, Matrix ueber Inventory)
 - `janitor.yml` (Docker prune etc.)
 - `maintenance.yml` (apt, security-updates)
 - `provision-server.yml` (Neue Server bootstrappen)
 - `restore.yml` (Disaster-Recovery)
 - `sync-kuma-notifications.yml` (Discord-Webhooks → Kuma)
-- `sync-ssh-access.yml` (Public-Keys-Verteilung)
+- `sync-ssh-access.yml` (Public-Keys-Verteilung) **(DEPRECATED — fallback only)**
 - `update-server.yml` (Inkrementelle Server-Config-Pflege — inotify-Limits etc.)
 
-**4.2 `dynamic/middlewares.yml` ergänzen** (7 Middlewares aus dem
+**4.2 `dynamic/middlewares.yml` ergaenzen** (7 Middlewares aus dem
 upload-hardening Bundle):
 - `media-safe-headers`
 - `media-inline-images`
@@ -258,7 +268,7 @@ upload-hardening Bundle):
 - `body-limit-large` (100 MiB)
 - `auth-ratelimit` (60/min, burst 30)
 - `upload-ratelimit`
-Plus `forwardedHeaders.trustedIPs` Fix für client-IP-Resolution unter Cloudflare.
+Plus `forwardedHeaders.trustedIPs` Fix fuer client-IP-Resolution unter Cloudflare.
 
 Source: vergleiche mit `MichaBigler/webapp-management/dynamic/middlewares.yml`.
 
@@ -267,7 +277,7 @@ Source: vergleiche mit `MichaBigler/webapp-management/dynamic/middlewares.yml`.
   vorab Backup-Workflow manuell triggern, Logs verfolgen
   (`docker logs -f uptime-kuma` kann Stunden dauern bei viel Heartbeat-Historie)
 - `uptime-kuma.extra_hosts:` Public-Domains pro App auf demselben Server
-  hinzufügen (Hairpin-NAT-Workaround)
+  hinzufuegen (Hairpin-NAT-Workaround)
 
 **4.4 Concurrency in Deploy-Workflows:**
 Jeder App-Deploy-Workflow + `deploy-traefik.yml` braucht:
@@ -279,10 +289,10 @@ concurrency:
 Plus server-side flock in der `deploy-app` Composite-Action (in workflow-templates).
 
 **4.5 `prConcurrentLimit: 1` in shared config** ist bereits zentral gesetzt —
-keine Aktion im Tenant nötig, greift automatisch über `extends`.
+keine Aktion im Tenant noetig, greift automatisch ueber `extends`.
 
 **4.6 `inventory/inventory.yaml`:**
-Tenant trägt seine eigenen Server + Apps ein analog zu
+Tenant traegt seine eigenen Server + Apps ein analog zu
 `MichaBigler/webapp-management/inventory/inventory.yaml`. Schema:
 ```yaml
 targets:
@@ -294,7 +304,7 @@ targets:
     expected_container_tokens: [traefik, uptime-kuma, <app-token>]
 ```
 
-**4.7 Renovate-Onboarding für den Tenant-Stack** (bereits in Phase 2 erledigt).
+**4.7 Renovate-Onboarding fuer den Tenant-Stack** (bereits in Phase 2 erledigt).
 
 Commit-Set (pro Bereich einen Commit):
 - `feat(workflows): adopt update-server / apply-rulesets / sync-* workflows`
@@ -322,15 +332,15 @@ Fix-Pattern:
 2. Models: `upload_to=` auf UUID-Callable umstellen
    (`upload_to=lambda inst, fn: f"<scope>/{uuid4()}/{fn}"`)
 3. Data-Migration: RunPython, idempotent + reversibel, alte Files umbenennen
-4. ViewSet: `download` + `download_original` Actions die Permissions prüfen
+4. ViewSet: `download` + `download_original` Actions die Permissions pruefen
 5. Serializer: URL als `SerializerMethodField` (verhindert raw-Pfad-Leak)
 6. Frontend: `mediaUrls.js` Helper, alle Komponenten nutzen authenticated
    Endpoint statt `MEDIA_URL`
 7. Management-Command `reconcile_media_paths` als Post-Deploy-Safety-Net
 
-**5.2 SafeFileField überall wo Uploads ankommen**
+**5.2 SafeFileField ueberall wo Uploads ankommen**
 
-`django-core-micha 2.9.4` bringt `SafeFileField` + `SafeImageField` mit
+`django-core-micha` bringt `SafeFileField` + `SafeImageField` mit
 magic-bytes-Validation + Filename-Sanitization. Pflicht-Kwargs:
 `allowed_mimes=[...], max_size=N`.
 
@@ -346,9 +356,9 @@ class Attachment(models.Model):
     )
 ```
 
-Für jeden umgestellten Field:
+Fuer jeden umgestellten Field:
 - AlterField-Migration
-- DRF-Test der HTTP-400 bei Magic-Bytes-Mismatch zurückgibt
+- DRF-Test der HTTP-400 bei Magic-Bytes-Mismatch zurueckgibt
 - Wrap im Serializer: `DjangoValidationError → DRFValidationError` (sonst 500
   statt 400 — bekannter Bug aus den Pilots reimbursements + survey_app)
 
@@ -401,9 +411,15 @@ Monitoren — `/api/healthz` muss live antworten (kommt aus `django-core-micha 2
 
 (Erfolgt vom Tenant-Owner mit SSH-Zugriff, Agent koordiniert nur):
 
-1. `sync-secrets --server` Workflow im App-Repo manuell triggern → Proton-Pfad-
-   Secrets in GitHub-Environments aktualisiert
-2. SSH-Public-Keys aktualisieren via `sync-ssh-access.yml`
+> **VERALTET: `sync-ssh-access.yml` ist deprecated.**
+> **Kanonischer Weg: `ansible-provision.yml` mit `--tags ssh_sync`.**
+
+> **Warnung: proton-pass-cli darf NICHT direkt aufgerufen werden.**
+> **Alle Secrets werden ausschliesslich via `sync-secrets` Wrapper abgerufen.**
+
+1. `sync-secrets --secret-source proton` lokal ausfuehren (CLI-Wrapper, gibt keine
+   Secret-Werte aus) → Secrets in GitHub-Environments aktualisiert
+2. SSH-Public-Keys aktualisieren via `ansible-provision.yml --tags ssh_sync`
 3. Erster Deploy via Push auf `develop` (Staging) bzw. `main` (Production)
 4. `register-kuma-monitors` (in Deploy-Workflow) registriert Monitore automatisch
 5. Discord-Notifications via `sync-kuma-notifications.yml` zugewiesen
@@ -416,14 +432,14 @@ Vor "fertig" deklarieren:
 
 | Check | Ziel |
 |---|---|
-| `pnpm test` | grün |
-| `pnpm build` | grün (production-build catcht UTF-8) |
-| `pytest --create-db` | grün, keine neuen Failures |
+| `pnpm test` | gruen |
+| `pnpm build` | gruen (production-build catcht UTF-8) |
+| `pytest --create-db` | gruen, keine neuen Failures |
 | `docker compose build backend` | exit 0 |
 | Mend-Dashboard | "Detected Dependencies" zeigt manager-Liste, keine "Reason: undefined" |
 | Renovate-Dashboard | "Repository problems" leer |
 | Health-Endpoint live | `curl https://<domain>/api/healthz` → 200 |
-| Kuma | `<app>-frontend` + `<app>-healthz` grün |
+| Kuma | `<app>-frontend` + `<app>-healthz` gruen |
 | `/media/` Auth-Check | `curl https://<domain>/media/<sensitive>.pdf` → 403/404 ohne Auth |
 
 ---
@@ -435,21 +451,21 @@ Vor "fertig" deklarieren:
 
 2. **ui-core-micha duplicate**: wenn react-i18next sowohl in `dependencies` von
    ui-core-micha als auch in der App ist (Versions-Drift), gibt es **zwei
-   i18next-Contexts** → Translations brechen. Lösung: ui-core-micha 2.4.0
-   verschiebt es nach `peerDependencies`.
+   i18next-Contexts** → Translations brechen. Loesung: neuere ui-core-micha-Versionen
+   verschieben es nach `peerDependencies`.
 
-3. **Tiptap v3** droppt default exports; alle Extension-Imports müssen
+3. **Tiptap v3** droppt default exports; alle Extension-Imports muessen
    `import { X } from '@tiptap/extension-x'` werden.
-   `shouldRerenderOnTransaction: true` für MenuBar-State.
+   `shouldRerenderOnTransaction: true` fuer MenuBar-State.
 
 4. **pnpm v11** hat default `minimum-release-age` (~24h). Frisch publizierte
    Packages blocken den Install — `pnpm clean --lockfile && pnpm install` zur
    Re-Resolution oder pakete in `minimumReleaseAgeExclude` aufnehmen.
 
-5. **Kuma v2 Migration ist EINSEITIG**, läuft Stunden — Backup zwingend vor
+5. **Kuma v2 Migration ist EINSEITIG**, laeuft Stunden — Backup zwingend vor
    Image-Tag-Bump.
 
-6. **Pillow** war früher transitiv über `matplotlib`; nach matplotlib-Drop
+6. **Pillow** war frueher transitiv ueber `matplotlib`; nach matplotlib-Drop
    muss `Pillow` explizit in `requirements.txt`, sonst bricht `ImageField`-
    System-Check.
 
@@ -462,7 +478,7 @@ Vor "fertig" deklarieren:
 
 9. **`actions/checkout@v6`** existiert real (v6.0.2, produktiv in 13 Repos im
    bigler-webapps Workspace). Reviewer mit Knowledge-Cutoff August 2025
-   könnten das fälschlich als "not real" flaggen.
+   koennten das faelschlich als "not real" flaggen.
 
 10. **`baseBranches: ["develop"]` im shared Renovate-Preset** ist
     App-Repo-Default. Platform/Lib-Repos brauchen `baseBranches: ["main"]`
@@ -472,14 +488,14 @@ Vor "fertig" deklarieren:
 
 ## Rollback-Strategie
 
-- **Phase 1 (Lib-Pins)**: trivial — frühere Pin in requirements.txt /
+- **Phase 1 (Lib-Pins)**: trivial — frueheren Pin in requirements.txt /
   package.json, lockfile regenerieren.
-- **Phase 2 (Renovate-Onboarding)**: trivial — renovate.json löschen.
-- **Phase 3 (App-Modernization)**: Branch zurücksetzen, Docker-Image vom
+- **Phase 2 (Renovate-Onboarding)**: trivial — renovate.json loeschen.
+- **Phase 3 (App-Modernization)**: Branch zuruecksetzen, Docker-Image vom
   vorigen Tag rollen. Vor Phase 3 ein Snapshot des Production-Images ziehen.
-- **Phase 4.3 (Kuma v1→v2)**: Image-Tag zurück auf `:1`, `uptime-kuma-data`
+- **Phase 4.3 (Kuma v1→v2)**: Image-Tag zurueck auf `:1`, `uptime-kuma-data`
   aus tarball restoren, `docker compose up -d uptime-kuma`.
-- **Phase 5 (Security /media/-Gate)**: revert der urls.py-Änderung +
+- **Phase 5 (Security /media/-Gate)**: revert der urls.py-Aenderung +
   data-Migration `migrate <app> <prev_migration>`. **Achtung**: legacy-Files
   unter alten Pfaden sind eventuell schon umbenannt.
 
@@ -492,7 +508,7 @@ Vor "fertig" deklarieren:
 3. Phase 2 Renovate-Onboarding (kein Risiko)
 4. Phase 4.1-4.2 Workflows + Middlewares im Tenant-webapp-management
 5. Phase 6 CI/CD im App-Repo (so dass Phase-3-Commits durch CI gehen)
-6. Phase 3 App-Modernization (großer Brocken, gut testen)
+6. Phase 3 App-Modernization (grosser Brocken, gut testen)
 7. Phase 4.3 Kuma v2 (eigener Wartungs-Slot, Backup voraus)
 8. Phase 4.4-4.6 Concurrency / Inventory
 9. Phase 5 Security-Hardening (eigener Plan + planner_review)
@@ -506,12 +522,12 @@ Zwischen jeder Phase: Commit + Push + Mend-Dashboard kurz checken.
 ## Bei Unklarheit
 
 Konsultiere als Referenz:
-- `docs/new-app-checklist.md` (in MichaBigler/webapp-management) — wo App-
-  spezifische Registries gepflegt werden
+- `docs/new-app-checklist.md` (in MichaBigler/webapp-management, Persoenliches Platform-Repo des Operators) —
+  wo App-spezifische Registries gepflegt werden
 - `ARCHITECTURE.md` (in MichaBigler/webapp-management) — aktuelle
   Platform-Architektur
-- `CLOUDFLARE_MIGRATION_PLAN.md` (in MichaBigler/webapp-management) —
-  geplante CF-Tunnel-Phasen 1/2
+- Die Cloudflare-Tunnel-Architektur ist vollstaendig etabliert. Konfiguration via
+  Terraform (`terraform/`) und `docs/ONBOARDING.md` Abschnitt A.7.
 - `SECURITY_FINDINGS.md` (in MichaBigler/webapp-management) — komplette
   Findings-Liste mit Status
 - `MEMORY.md` in `django-core-micha` — Release-Discipline, Pin-Migration-Story
