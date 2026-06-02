@@ -1,4 +1,24 @@
-# Onboarding Guide -- Infrastructure and App
+**Step 1: Add the new tenant to kuma-sync.yml**
+
+The `Kuma Monitor Sync` workflow (`webapp-management/.github/workflows/kuma-sync.yml`)
+has a hardcoded `APPS` variable listing all monitored tenants. A new tenant is NOT
+auto-discovered -- you must add it:
+
+```bash
+# In webapp-management repo, edit .github/workflows/kuma-sync.yml
+# Find both APPS= lines (~line 90 and ~line 115) and add your tenant slug:
+APPS="bigler-consult hram ... <new-tenant-slug>"
+# Commit and push to main
+```
+
+**Step 2: Trigger Kuma Monitor Sync**
+
+```bash
+cd <webapps-root>/webapp-management
+gh workflow run kuma-sync.yml
+```
+
+This creates Kuma monitors for all apps in the APPS list, reading each app's `project.yaml` for domains and server.# Onboarding Guide -- Infrastructure and App
 
 > Agent-optimized. Stop at every PAUSE POINT for required human action or verification.
 >
@@ -443,15 +463,28 @@ targets:
     compose_profile: staging          # maps to Docker Compose --profile flag
     roles:
       - traefik
+      - restore              # staging is restore-destination only
+      # backup/maintenance/janitor/ssh_sync are production-only roles
+    sync_staging_apps: []
+    infra_container_tokens:           # containers managed by deploy-traefik (not app containers)
+      - traefik
+      - cloudflared
+
+  production:                # example production target
+    github_environment: production
+    deploy_user: deploy
+    compose_profile: main
+    roles:
+      - traefik
       - backup
       - maintenance
       - janitor
       - ssh_sync
       - restore
-    sync_staging_apps: []
-    infra_container_tokens:           # containers managed by deploy-traefik (not app containers)
+    sync_staging_apps:
+      - <tenant-slug>        # apps whose staging syncs from this server
+    infra_container_tokens:
       - traefik
-      - cloudflared
 ```
 
 Commit just the rename if you want it tracked, or keep it local-only (it is already in `.gitignore`).
@@ -476,6 +509,10 @@ Commit just the rename if you want it tracked, or keep it local-only (it is alre
      source: "proton://webapp-management/ci-tokens/ts_oauth_client_id"
    ORIGIN_CERT_<YOUR_DOMAIN>:
      source: "proton://webapp-management/domain-<your-domain>/origin_cert"
+     exclude_from_env: true
+   ORIGIN_KEY_<YOUR_DOMAIN>:
+     source: "proton://webapp-management/domain-<your-domain>/origin_key"
+     exclude_from_env: true
    ```
 
    **Paths that need adapting:**
@@ -533,13 +570,25 @@ JSON
 
 ### A.5 Provision the server (ansible-provision.yml)
 
-You need a fresh server. Suggested config:
+**First-run bootstrap (fresh server — OPERATOR step, NOT CI):**
 
-- Ubuntu 22.04 or 24.04 LTS
-- Minimum 2 vCPU, 4 GB RAM (more for Java-heavy apps)
-- A root SSH key configured during creation
+The `ansible-provision.yml` CI workflow connects as the `provision` user via Tailscale-SSH. A fresh server has neither the `provision` user nor Tailscale installed yet, so the CI workflow cannot reach it on the first run. You must bootstrap manually from a local machine that can SSH into the server via its public IP:
 
-Note the public IP -- you will need it in the DNS steps below.
+```bash
+# From WSL / Linux on your admin machine:
+cd <webapps-root>/webapp-management/ansible
+
+# Temporarily override the host to use the public IP (the host_vars file uses
+# the Tailscale hostname which does not exist yet on a fresh server):
+ansible-playbook site.yml \n  --inventory inventory/hosts.yml \n  --limit <target> \n  --extra-vars "ansible_host=<server-public-ip> ansible_user=root" \n  --ask-pass
+```
+
+This first run installs Tailscale (using the auth key from Proton/GitHub), creates the `provision` user, and enables Tailscale-SSH. After it completes:
+- The server appears in the Tailscale admin console
+- `ansible_host` in `host_vars/<target>.yml` should be the Tailscale MagicDNS hostname (already set in the template)
+- Subsequent runs via the `ansible-provision.yml` CI workflow use Tailscale-SSH keyless as the `provision` user
+
+**PAUSE POINT:** Confirm the first-run bootstrap completed and the server is visible in Tailscale admin before triggering the CI workflow.
 
 The canonical provisioning path is `ansible-provision.yml`, which runs the idempotent
 `ansible/site.yml` playbook. It covers BOTH fresh-host bootstrap AND incremental
@@ -583,12 +632,12 @@ blind; understand what happened.
 
 ### A.6 Deploy Traefik infrastructure
 
-1. Adapt `docker-compose.yml` to your needs:
-   - Set `DOMAIN_TRAEFIK`, `DOMAIN_KUMA`, `TRAEFIK_DASHBOARD_AUTH` in secrets
-   - **Important:** `TRAEFIK_DASHBOARD_AUTH` needs `$$` (double-dollar) escaping -- see
-     [DASHBOARD.md](DASHBOARD.md) for the gotchas
-   - `ACME_EMAIL` **must** be set (it exists in `webapp-management/traefik/acme_email` in Proton and is read by docker-compose). TLS is handled by Cloudflare Origin Certificates, not by ACME cert issuance — but docker-compose references the variable regardless and will fail to start if it is empty.
-2. Trigger `Deploy Traefik Infrastructure` workflow
+1. Verify that A.3 (`sync-secrets --server`) already pushed these required variables as GitHub Secrets:
+   - `DOMAIN_TRAEFIK`, `DOMAIN_KUMA`, `ACME_EMAIL`, `TRAEFIK_DASHBOARD_AUTH`
+   - Sources: `webapp-management/server-{target}/domain_traefik`, `domain_kuma` and `webapp-management/traefik/acme_email`, `dashboard_auth` in Proton
+   - `ACME_EMAIL` must be non-empty (docker-compose references it even when TLS uses CF Origin Certs)
+   - `TRAEFIK_DASHBOARD_AUTH` needs `$$` (double-dollar) in the compose file -- see [DASHBOARD.md](DASHBOARD.md)
+2. Trigger the `Deploy Infrastructure` workflow (exact name in GitHub Actions tab)
 3. Point your DNS records -- see A.7 below for the correct record types per use case
 
 ### A.7 Configure Cloudflare Tunnel + DNS + Origin Certificate
@@ -612,7 +661,7 @@ Content: <tunnel-uuid>.cfargotunnel.com
 Proxied: yes (orange cloud)
 ```
 
-Replace `<tunnel-uuid>` with the UUID from `webapp-management/secrets.yaml` `CF_TUNNEL_ID`.
+Replace `<tunnel-uuid>` with the UUID noted during tunnel creation in A.0.6 Step 1. There is no `CF_TUNNEL_ID` in `secrets.yaml` -- the UUID comes from the Cloudflare Zero Trust dashboard.
 
 For **direct-access records** (e.g. the raw server IP for admin/break-glass, Kuma on Tailnet,
 or any host that does NOT go through the tunnel):
@@ -624,26 +673,23 @@ Content: <server-public-ip>
 Proxied: no (grey cloud) -- only for direct access
 ```
 
-#### A.7.2 Origin Certificate creation
+#### A.7.2 Origin Certificate -- automated placement via deploy-traefik
 
-For each apex domain (or wildcard) that needs TLS:
+The cert content was stored in Proton Pass in A.0.3 (`origin_cert` + `origin_key` fields
+in `webapp-management/domain-<domain>`). `sync-secrets --server` (A.3) pushed them as
+GitHub Secrets (`ORIGIN_CERT_<DOMAIN_SLUG>` + `ORIGIN_KEY_<DOMAIN_SLUG>`).
 
-1. In the Cloudflare dashboard: **SSL/TLS → Origin Server → Create Certificate**
-2. Select the hostnames: typically `*.yourdomain.com` and `yourdomain.com`
-3. Choose validity (15 years is standard for origin certs)
-4. Copy the certificate and private key
-5. Place them on the server:
-   - Certificate: `./certs/<domain>.pem`
-   - Private key: `./certs/<domain>.key`
-   - Permissions: `chmod 600 ./certs/<domain>.key`
-6. Reference the cert paths in Traefik's TLS configuration
+The `Deploy Infrastructure` workflow reads these secrets and writes the files to the server:
+- `./certs/<domain-slug>.crt` (e.g. `./certs/example-com.crt`)
+- `./certs/<domain-slug>.key` (e.g. `./certs/example-com.key`)
 
-**PAUSE POINT:** Manual step. The platform-operator creates the cert via the Cloudflare dashboard,
-copies the PEM/key content, and places it on the server before Traefik can serve TLS.
+The slug format is: domain with dots and hyphens only (e.g. `example.com` → `example-com`).
 
-For staging subdomains under your apex domain: the existing wildcard cert
-`*.<your-apex-domain>` typically already covers new subdomains. Verify coverage before
-creating a new cert.
+**You do not manually place cert files on the server.** Triggering `Deploy Infrastructure`
+(A.6 step 2) handles this automatically.
+
+For staging subdomains under your apex domain: the existing wildcard cert `*.<your-apex-domain>`
+typically already covers new subdomains. Verify coverage before creating a new cert.
 
 #### A.7.3 Update tunnel ingress
 
@@ -672,39 +718,31 @@ gh workflow run deploy-traefik.yml --field target=staging
 **VERIFY:** `curl -I https://<subdomain>.<domain>/` returns HTTP 200 or the expected
 redirect/auth response -- NOT 502 or 503.
 
-### A.8 Register Uptime Kuma monitors (Tailnet-Serve path :8443)
+### A.8 Sync Kuma notification channels (Tailnet-Serve path :8443)
 
-Kuma is accessed via Tailnet-Serve on port `:8443`. The monitoring infrastructure uses
-Tailscale as the network path -- this is the current architecture, not a future upgrade.
+Kuma is accessed via Tailnet-Serve on port `:8443`. This step syncs notification channels
+(Discord webhooks, etc.) to the Kuma instance -- it does NOT register per-app monitors.
+App monitors are registered via `kuma-sync.yml` in B.10.
 
 ```bash
 cd <webapps-root>/webapp-management
-gh workflow run sync-kuma-notifications.yml
+gh workflow run sync-kuma-notifications.yml --field target=<target>
+# target = inventory target name (e.g. monitoring, staging)
 ```
 
-Verify in the Kuma dashboard (`https://kuma.<your-domain>`) that monitors are active
-and green.
+Verify in the Kuma dashboard (`https://kuma.<your-domain>`) that notification channels
+are configured (Settings → Notification).
 
 ### A.9 Verify backups
 
-Set up Backblaze B2:
+B2 credentials were stored in Proton Pass (A.0.7) and synced to GitHub via `sync-secrets --server` (A.3). There is nothing new to configure here.
 
-1. Create a B2 bucket
-2. Create an Application Key with read/write permissions to that bucket
-3. Note the `keyID`, `applicationKey`, and bucket URL
-4. Add them to `secrets.values.yaml` under your target
-5. Generate a strong `RESTIC_PASSWORD` (this is permanent -- losing it means losing
-   access to all backups)
-6. Push to GitHub:
-   ```bash
-   sync-secrets --server --secret-source yaml \
-     --values-file secrets.values.yaml --secret-target production
-   ```
+Run a manual backup to verify the pipeline end-to-end:
 
-Run the backup workflow manually once:
+1. **Actions → Backup → Run workflow** → select `target` = `<your-target>`
+2. Check the logs -- restic should initialise the repo on first run (or snapshot on subsequent runs) and exit cleanly
 
-1. **Actions → Backup → Run workflow** → `production`
-2. Check the logs -- restic should initialize the repo, snapshot, and exit cleanly
+If backup fails with "repository does not exist": first run **Actions → Restic Init → Run workflow** for the same target, then retry.
 
 ### A.10 Part A acceptance criteria
 
@@ -819,6 +857,8 @@ environments:
       - "localhost"
     web_port: <unique-port>        # pick from 8100-8199, not used by other local apps
     db_port: <unique-port>         # pick from 5433-5499, not used by other local apps
+    frontend_port: <unique-port>   # Vite dev server; pick from 5174-5299
+    redis_port: <unique-port>      # Redis; pick from 6380-6499
 ```
 
 > **Non-secret config belongs in `app_env`**, not in `secrets.yaml`. Values like
@@ -834,11 +874,11 @@ The agent MUST pick ports not yet used by other tenants. Check the local environ
 ```bash
 for app in hram jg-ferien kerzenziehen innoservice survey_app survey_contact_app reimbursements; do
   echo "=== $app ==="
-  grep -E "web_port|db_port" "<webapps-root>/$app/project.yaml" 2>/dev/null
+  grep -E "web_port|db_port|frontend_port|redis_port" "<webapps-root>/$app/project.yaml" 2>/dev/null
 done
 ```
 
-Pick `web_port` and `db_port` (under the `local:` environment) outside the union of the above.
+Pick all four ports (`web_port`, `db_port`, `frontend_port`, `redis_port`) outside the union of the above.
 
 ### B.3 Configure secrets.yaml (app class)
 
@@ -868,6 +908,7 @@ Copy the existing `webapp-template/secrets.yaml` and replace `<tenant-slug>` wit
 | `proton://webapp-management/monitoring/kuma_automation_user` | `KUMA_AUTOMATION_USER` | Shared Kuma automation user |
 | `proton://webapp-management/monitoring/kuma_automation_password` | `KUMA_AUTOMATION_PASSWORD` | |
 | `proton://webapp-management/shared-api-keys/mui_license` | `VITE_APP_MUI_LICENSE_KEY` | MUI X license, all apps |
+| `proton://webapp-management/shared-api-keys/deepl_api` | `DEEPL_API_KEY` | DeepL translation API -- add only if the app uses DeepL |
 
 **Critical secrets that should NOT be in `secrets.yaml`** (deprecated/removed):
 - `SYNC_SHARED_SECRET` -- removed via S71. Do not re-add.
@@ -1324,18 +1365,15 @@ Symptom: Traefik or cloudflared cannot resolve hostname; `dig` returns NXDOMAIN.
 Fix: Wait 5--10 min after setting the CNAME/A record. Use `dig @1.1.1.1 <hostname>` to
 query Cloudflare's resolver directly. Verify the record type (CNAME for tunneled, A for direct).
 
-### SSH_PRIVATE_KEY_ROOT missing
+### ansible-provision.yml fails to connect (fresh server)
 
-Symptom: `ansible-provision.yml` fails to connect to the server.
+Symptom: SSH connection refused or timeout on first run.
 
-Fix: Add the value to `secrets.values.yaml`, re-run `sync-secrets --server`, re-run the
-provisioning workflow.
+Cause: Fresh server -- `provision` user and Tailscale not yet installed.
 
-### Wrong server IP
-
-Symptom: All workflows time out.
-
-Fix: Update `SSH_HOST` in `secrets.values.yaml`, re-run `sync-secrets`, retry.
+Fix: Run the first-time bootstrap manually as described in A.5 (operator local run with
+`--extra-vars ansible_host=<public-ip> ansible_user=root`). After the first run
+completes, the CI workflow will connect via Tailscale-SSH as `provision`.
 
 ---
 
