@@ -66,219 +66,306 @@ Additional items needed:
 ### A.0 Prerequisites Setup — Prepare external services (Proton, Tailscale, Cloudflare, B2)
 
 **Timing:** This section is entirely manual and external to the infra repo. Allocate **1--2 hours** here.
-All steps must complete BEFORE A.1. The agent can skip if already done.
+All steps must complete BEFORE A.1. The agent can skip already-done steps.
 
-#### A.0.1 Proton Pass: Create tenant vault + secret entries
+#### A.0.1 Proton Pass: Understand the two-vault architecture
 
-All secrets for this tenant live in Proton Pass. `sync-secrets` will read from Proton and push to GitHub Environments / local .env files.
+The platform uses **two types of Proton Pass vaults**, each with a distinct purpose:
 
-1. **Open Proton Pass** (desktop or web UI)
+```
+Proton Pass
+├── webapp-management          ← PLATFORM vault (one shared vault for the whole platform)
+│   ├── server-staging/        ← per-server items (one item group per server)
+│   ├── server-main-prod/
+│   ├── server-contact-prod/
+│   ├── server-runners/
+│   ├── server-monitoring/
+│   ├── ci-tokens/             ← shared across ALL apps
+│   ├── cloudflare-api/        ← shared
+│   ├── github/                ← shared (runner GH App + Kuma sync App)
+│   ├── terraform-cloud/       ← shared
+│   ├── traefik/               ← shared
+│   ├── monitoring/            ← shared (Kuma credentials)
+│   ├── cross-server-restore/  ← shared
+│   ├── shared-api-keys/       ← shared (MUI license, DeepL, etc.)
+│   ├── domain-example.com/    ← per-domain (origin cert + key)
+│   └── domain-other.com/
+│
+├── hram                       ← per-app vault (one vault per tenant app)
+├── jg-ferien                  ← per-app vault
+├── innoservice                ← per-app vault
+└── <new-tenant-slug>          ← you will create this in A.0.2
+```
 
-2. **Create a new vault** named `Projekt <Tenant-Name>` (e.g. `Projekt ACME-Shop`)
+**Proton path format used in `secrets.yaml`:**
+```
+proton://<vault-name>/<item-name>/<field-name>
+```
+Examples:
+```
+proton://webapp-management/ci-tokens/ts_oauth_client_id   ← shared
+proton://webapp-management/server-staging/tailnet_auth_key ← per-server
+proton://hram/django/secret_key                            ← per-app
+```
 
-3. **Inside the vault, create these items (Proton Pass stores them as key-value pairs):**
+**For a new server deployment, what you need to create:**
+- In `webapp-management` vault: add a new `server-<target>` item group (A.0.2)
+- In `webapp-management` vault: add a new `domain-<domain>` item group if new domain (A.0.3)
+- Create a new per-app vault `<tenant-slug>` for the app's own secrets (A.0.4)
 
-   | Proton Pass Item Path | Value | Notes |
-   |---|---|---|
-   | `Database/username` | `tenant_user` (or unique name per server) | PostgreSQL user |
-   | `Database/password` | strong random password (32+ chars, no quotes) | PostgreSQL password |
-   | `Database/database_name` | `tenant_db` (or unique name) | PostgreSQL database name |
-   | `Database/host` | `postgres.internal` or server hostname | DB server address |
-   | `Django/secret_key` | `python -c "import secrets; print(secrets.token_urlsafe(50))"` | Do NOT copy examples; generate fresh |
-   | `Django/debug` | `false` | S40 guard: must be false in production |
-   | `Mail/host` | `smtp.gmail.com` or your provider | SMTP hostname |
-   | `Mail/port` | `587` or your provider's port | SMTP port |
-   | `Mail/user` | SMTP login (e.g. noreply@company.com) | |
-   | `Mail/password` | SMTP app-specific password | Do NOT use account password if TOTP-protected |
-   | `Tailscale/auth_key` | (will be created in A.0.2) | Pre-auth key from Tailscale |
-   | `Cloudflare/api_token` | (will be created in A.0.3) | API token from Cloudflare |
-   | `Cloudflare/tunnel_token` | (will be created in A.0.3) | Tunnel token from Cloudflare |
-   | `Cloudflare/account_id` | Your Cloudflare account ID | Found in Cloudflare dashboard → Account |
-   | `SSH/deploy_user_private_key_staging` | SSH private key (ed25519) | See generation steps below |
-   | `SSH/deploy_user_private_key_prod` | SSH private key (ed25519) | See generation steps below |
-   | `B2/key_id` | B2 Application Key ID | (will be created in A.0.4) |
-   | `B2/app_key` | B2 Application Key secret | (will be created in A.0.4) |
-   | `B2/restic_password` | strong random password (64+ chars) | PERMANENT: losing it = losing backups |
+**What is already in `webapp-management` and does NOT need to be recreated:**
+`ci-tokens`, `cloudflare-api`, `github`, `terraform-cloud`, `traefik`, `monitoring`, `cross-server-restore`, `shared-api-keys` — these are platform-wide and shared by all tenants.
 
-4. **Generate SSH keys locally and store in Proton:**
-   ```bash
-   ssh-keygen -t ed25519 -f tenant-staging-deploy -N "" -C "deploy@staging.<tenant>"
-   ssh-keygen -t ed25519 -f tenant-prod-deploy -N "" -C "deploy@prod.<tenant>"
-   
-   # Copy the PRIVATE key content to Proton Pass:
-   cat tenant-staging-deploy | pbcopy  # macOS
-   # or: cat tenant-staging-deploy      # then select all and copy
-   # Paste into Proton Pass → Projekt <Tenant> → SSH → deploy_user_private_key_staging
-   
-   # Do the same for tenant-prod-deploy
-   
-   # Keep the .pub files for A.0.2 (Tailscale ACL setup)
-   ```
-
-5. **Do NOT store on disk:** Delete the local `tenant-*-deploy` files after copying to Proton. Never leave private keys on disk outside of Proton Pass.
-   ```bash
-   rm tenant-staging-deploy tenant-staging-deploy.pub tenant-prod-deploy tenant-prod-deploy.pub
-   ```
-
-**PAUSE POINT:** Proton vault must be complete before A.0.2. Verify all items exist (no empty values) in the Proton UI.
+**PAUSE POINT:** If the `webapp-management` vault does not exist yet (brand-new platform),
+you must first set it up completely including all shared items before proceeding.
+Ask the platform operator to confirm the vault exists and the shared items are populated.
 
 ---
 
-#### A.0.2 Tailscale: Register tenant and create auth-keys
+#### A.0.2 Proton Pass: Add server-specific items to webapp-management vault
 
-This section requires **Tailscale Business** (or Admin access to the tailnet).
+For each new server (`<target>` = inventory target name, e.g. `staging`, `main-prod`):
+
+1. **Open Proton Pass → webapp-management vault**
+
+2. **Create a new login/note item** named `server-<target>` (e.g. `server-staging`)
+
+3. **Add these custom fields to the item:**
+
+   | Field name | Value | How to obtain |
+   |---|---|---|
+   | `tailnet_auth_key` | Tailscale pre-auth key | A.0.5 below |
+   | `tunnel_token` | Cloudflare Tunnel token | A.0.6 below |
+   | `b2_key_id` | Backblaze B2 Application Key ID | A.0.7 below |
+   | `b2_app_key` | Backblaze B2 Application Key secret | A.0.7 below |
+   | `restic_repo` | `s3:s3.<region>.backblazeb2.com/<bucket>` | A.0.7 below |
+   | `restic_password` | `openssl rand -base64 48` (run locally, save here) | Generate now |
+   | `domain_traefik` | e.g. `traefik.<your-domain>` | Your DNS setup |
+   | `domain_kuma` | e.g. `status.<your-domain>` (only on the monitoring server) | Your DNS setup |
+
+   > **`restic_password` is permanent.** Generate it now with `openssl rand -base64 48`,
+   > paste directly into Proton Pass, and do NOT save it anywhere else. Losing it = losing
+   > access to all backups for this server.
+
+4. **Repeat for each additional server** (staging, prod, etc.) — each gets its own item.
+
+**PAUSE POINT:** All fields in `server-<target>` must be populated before A.0.3.
+
+---
+
+#### A.0.3 Proton Pass: Add domain-specific items to webapp-management vault (if new domain)
+
+For each domain that needs Cloudflare Origin Certificate TLS (skip if the domain already exists):
+
+1. **Open Proton Pass → webapp-management vault**
+
+2. **Create a new item** named `domain-<domain>` (e.g. `domain-example.com`)
+
+3. **Add these custom fields** — values will be filled in during A.0.6 (after you create the Origin Cert):
+
+   | Field name | Value |
+   |---|---|
+   | `origin_cert` | PEM content of the Cloudflare Origin Certificate |
+   | `origin_key` | PEM content of the private key |
+
+   > Leave these empty for now. You will fill them in during A.0.6.
+
+---
+
+#### A.0.4 Proton Pass: Create per-app vault for the new tenant
+
+Each tenant app gets its own Proton vault. The vault name is the tenant slug (lowercase, no prefix).
+
+1. **Open Proton Pass → Create new vault**
+
+2. **Name it exactly `<tenant-slug>`** (e.g. `acme-shop`) — lowercase, no spaces, no "Projekt" prefix
+
+3. **Create these items inside the vault:**
+
+   **Item: `django`**
+   | Field | Value | Notes |
+   |---|---|---|
+   | `secret_key` | `python -c "import secrets; print(secrets.token_urlsafe(50))"` | Generate fresh; never reuse |
+
+   **Item: `database`**
+   | Field | Value | Notes |
+   |---|---|---|
+   | `password` | strong random password (32+ chars) | `openssl rand -base64 24` |
+
+   > Note: `DB_USER`, `DB_NAME`, `DB_HOST` are non-secret config values — they go in
+   > `project.yaml` under `app_env`, not in `secrets.yaml`. See B.2.1.
+
+   **Item: `mail`**
+   | Field | Value |
+   |---|---|
+   | `password` | SMTP password or app-specific password for your mail provider |
+
+   > `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER` are non-secret — they go in `project.yaml`.
+
+   **Item: `social-auth`** (only if the app uses OAuth login)
+   | Field | Value |
+   |---|---|
+   | `google_secret` | Google OAuth client secret |
+   | `microsoft_secret` | Microsoft OAuth client secret |
+
+   > The corresponding client IDs are non-secret and go in `project.yaml`.
+
+   **App-specific items** (add as needed for the specific app's requirements)
+
+4. **Do NOT add shared secrets here.** The following are already in `webapp-management` and
+   referenced from there in `secrets.yaml` — do not duplicate:
+   - `ci-tokens/*` (Tailscale OAuth, Kuma automation)
+   - `shared-api-keys/*` (MUI license, DeepL)
+   - `monitoring/*` (Kuma automation credentials)
+
+**PAUSE POINT:** Per-app vault complete. Verify all items exist and fields are non-empty.
+
+---
+
+#### A.0.5 Tailscale: Create pre-auth key for the new server
+
+This section requires Admin access to the tailnet.
 
 1. **Open Tailscale admin console** (`https://login.tailscale.com/admin`)
 
-2. **Create a new `tag:server-<tenant>` (if not using Space isolation)**
-   - Devices → Tags → Edit → add `tag:server-<tenant>` rule (e.g. `tag:server-acme-shop`)
-   - This tag will be assigned to the provisioned server
-
-3. **Create OAuth Client for CI/deploy** (if this is the first tenant on this platform):
-   - Settings → OAuth Clients → Create → give it a name (e.g. `CI-Deploy-<Tenant>`)
-   - **Grant:** `Devices: all`, `ACLs: write`
-   - **Copy the `Client ID` and immediately store in Proton Pass:**
-     - Path: `Projekt <Tenant> → Tailscale/oauth_client_id`
-   - **Copy the `Client Secret` and immediately store in Proton Pass:**
-     - Path: `Projekt <Tenant> → Tailscale/oauth_client_secret`
-   - Do NOT save locally or paste elsewhere
-
-4. **Create pre-auth keys** for the server's first-boot (ansible-provision will use these):
-   - Security → Pre-auth keys → Generate → set:
-     - **Ephemeral:** false (server should stay persistent)
-     - **Reusable:** false (one-time use)
-     - **Expiration:** 24 hours (provision must complete within this window)
-     - **Tags:** `tag:server-<tenant>` (e.g. `tag:server-acme-shop`)
-   - **Copy the pre-auth key and immediately store in Proton Pass:**
-     - Path: `Projekt <Tenant> → Tailscale/auth_key`
-   - Do NOT save locally
-
-5. **Add SSH ACL rule** (allow CI runners to SSH into the server):
-   - Settings → ACLs → Edit policy JSON
-   - Find the `"ssh":` section and add:
+2. **Verify the `tag:server` ACL and SSH rule already exists** (platform-wide, set up once):
+   - Settings → ACL → check for an `ssh` block allowing `tag:ci-deploy` → `tag:server`:
      ```json
      "ssh": [
        {
          "action": "accept",
          "src": ["tag:ci-deploy"],
-         "dst": ["tag:server-<tenant>"],
+         "dst": ["tag:server"],
          "users": ["~user"]
        }
      ]
      ```
-     (Replace `<tenant>` with the actual tenant slug.)
-   - Save. The rule applies immediately.
+   - If missing, add it. This is a one-time platform setup, not per-server.
 
-6. **Create Cloudflare Tunnel token** (if this is the first tenant on this platform):
-   - Cloudflare Zero Trust → Access → Tunnels → Create tunnel
-   - Choose a name (e.g. `<tenant>-staging-tunnel`)
-   - **Copy the tunnel token and immediately store in Proton Pass:**
-     - Path: `Projekt <Tenant> → Cloudflare/tunnel_token`
-   - **Note the tunnel UUID** (you will need it for DNS CNAME records in A.0.3)
-   - Do NOT save locally
+3. **Create a pre-auth key for the new server:**
+   - Keys → Generate auth key → set:
+     - **Ephemeral:** false (server stays persistent)
+     - **Reusable:** false (one-time use)
+     - **Expiration:** 24 hours (provision must complete within this window)
+     - **Tags:** `tag:server` (or more specific tag if your ACL uses `tag:server-<role>`)
+   - **Copy the key → immediately paste into Proton Pass:**
+     - Vault: `webapp-management` → Item: `server-<target>` → Field: `tailnet_auth_key`
+   - Do NOT save locally or paste elsewhere.
 
-**PAUSE POINT:** All Tailscale + Cloudflare secrets must be stored in Proton Pass before A.0.3.
+4. **The Tailscale OAuth clients** (TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET) for CI are
+   platform-shared secrets that already exist in `webapp-management/ci-tokens/`.
+   Do NOT create new OAuth clients per tenant.
+
+**PAUSE POINT:** `tailnet_auth_key` field populated in Proton Pass `server-<target>` before A.0.6.
 
 ---
 
-#### A.0.3 Cloudflare: Add zone, generate API token, configure DNS
+#### A.0.6 Cloudflare: Create tunnel, Origin Certificate, and DNS records
 
-This section assumes you control the domain's registrar (e.g. Gandi, Namecheap, domain.com).
+> **Platform API token and Account ID** are already in `webapp-management/cloudflare-api/`.
+> Do NOT create new API tokens per tenant.
 
-1. **Add the zone to Cloudflare:**
-   - Cloudflare dashboard → Add a site
-   - Enter the domain (e.g. `example.com`)
-   - Select the free or paid plan
-   - Cloudflare will show two nameserver addresses (e.g. `ns1.cloudflare.com`, `ns2.cloudflare.com`)
+**Step 1: Create a new Cloudflare Tunnel for this server**
 
-2. **Update registrar nameservers:**
-   - Log into your registrar (Gandi, Namecheap, etc.)
-   - Find the domain settings → Nameservers
-   - Replace the current nameservers with the two Cloudflare nameservers
-   - Save. DNS propagation takes 10 min–48 hours (usually ~5 min)
+1. Cloudflare Zero Trust dashboard → Networks → Tunnels → Create tunnel
+2. Choose **Cloudflared** as connector type
+3. Name: `<target>` (e.g. `staging` or `main-prod`)
+4. Copy the tunnel token that appears
+5. **Immediately store in Proton Pass:**
+   - Vault: `webapp-management` → Item: `server-<target>` → Field: `tunnel_token`
+6. **Note the tunnel UUID** — visible in Zero Trust → Tunnels → click the tunnel name
+   - You will need this for the DNS CNAME record below
 
-3. **Wait for nameserver propagation:**
+**Step 2: Add the domain to Cloudflare (if new domain)**
+
+If this domain is not yet in Cloudflare:
+
+1. Cloudflare dashboard → Add a site → enter the domain (e.g. `example.com`)
+2. Cloudflare shows two nameserver addresses (e.g. `ns1.cloudflare.com`, `ns2.cloudflare.com`)
+3. At your registrar (Gandi, Namecheap, etc.): update the domain's nameservers to these two
+4. Wait for propagation (usually 5 min, up to 48 h):
    ```bash
-   # Verify locally:
    dig NS example.com +short
-   # Expected: the Cloudflare nameserver addresses
+   # Expected: Cloudflare nameserver addresses
    ```
 
-4. **Generate Cloudflare API token and store in Proton Pass:**
-   - My Profile → API Tokens → Create Token
-   - Template: `Edit Cloudflare Workers` or custom with these permissions:
-     - `Zone: Edit` (for DNS, SSL/TLS, etc.)
-     - `Zone: Read`
-   - Zone Resources: `Include: All zones` (or specific zone)
-   - **Copy the token and immediately store in Proton Pass:**
-     - Path: `Projekt <Tenant> → Cloudflare/api_token`
-   - Do NOT save locally
+**Step 3: Create Cloudflare Origin Certificate and store in Proton Pass**
 
-5. **Find and store your Cloudflare Account ID in Proton Pass:**
-   - Cloudflare dashboard → Account page (bottom-left) → Copy Account ID
-   - **Store in Proton Pass:**
-     - Path: `Projekt <Tenant> → Cloudflare/account_id`
+TLS uses Cloudflare Origin Certificates — NOT ACME / Let's Encrypt.
 
-6. **In Cloudflare, create the required DNS records:**
-   - **CNAME record for proxied apps:**
-     ```
-     Type:    CNAME
-     Name:    app  (for app.example.com)
-     Content: <tunnel-uuid>.cfargotunnel.com  (from A.0.2 step 6)
-     Proxied: yes (orange cloud)
-     TTL:     Automatic
-     ```
-   - **A record for direct-access (staging server, Kuma, etc.):**
-     ```
-     Type:    A
-     Name:    staging  (for staging.example.com)
-     Content: <server-public-ip>  (the VPS IP from A.0.5)
-     Proxied: no (grey cloud)
-     TTL:     Automatic
-     ```
+1. Cloudflare dashboard → select domain → SSL/TLS → Origin Server → Create Certificate
+2. Select hostnames: `*.example.com` and `example.com`
+3. Choose validity: 15 years
+4. Copy the **Certificate** (PEM) → **immediately store in Proton Pass:**
+   - Vault: `webapp-management` → Item: `domain-<domain>` → Field: `origin_cert`
+5. Copy the **Private Key** (PEM) → **immediately store in Proton Pass:**
+   - Vault: `webapp-management` → Item: `domain-<domain>` → Field: `origin_key`
+6. Do NOT save either value locally
 
-**PAUSE POINT:** DNS must be propagated, all Cloudflare secrets in Proton Pass, and DNS records created before A.0.4.
+> The `deploy-traefik` workflow reads these from GitHub Secrets (synced from Proton by
+> `sync-secrets --server`) and writes them to `./certs/<domain>.pem` and `.key` on the server.
+
+**Step 4: Create DNS records**
+
+For **apps routed through the Cloudflare Tunnel** (most app subdomains):
+```
+Type:    CNAME
+Name:    app              (for app.example.com)
+Content: <tunnel-uuid>.cfargotunnel.com
+Proxied: yes (orange cloud)
+TTL:     Automatic
+```
+
+For **direct-access records** (staging server IP, Kuma on Tailnet, etc.):
+```
+Type:    A
+Name:    staging          (for staging.example.com)
+Content: <server-public-ip>  (the VPS IP from A.0.8)
+Proxied: no (grey cloud)
+TTL:     Automatic
+```
+
+**PAUSE POINT:** `tunnel_token` and `origin_cert`/`origin_key` in Proton Pass, DNS records created.
 
 ---
 
-#### A.0.4 Backblaze B2: Create bucket + API key
+#### A.0.7 Backblaze B2: Create bucket + credentials per server
 
-Backblaze B2 is the S3-compatible backup storage. Free tier: 10 GB storage + 1 GB bandwidth/day.
+Each server gets its own B2 bucket. Free tier: 10 GB + 1 GB bandwidth/day.
 
 1. **Sign up / log in** to Backblaze B2
 
 2. **Create a bucket:**
    - Buckets → Create Bucket
-   - Name: `<tenant>-backups` (e.g. `acme-shop-backups`)
-   - Lifecycle: enable "Hide" after 30 days (keeps deleted file versions for 30 days)
+   - Name: `<target>-backups` (e.g. `staging-backups`, `main-prod-backups`)
+   - Lifecycle: enable "Keep prior versions for 30 days"
    - Save
 
-3. **Create an Application Key (API credentials):**
+3. **Create an Application Key restricted to this bucket:**
    - App Keys → Create Application Key
-   - Capabilities: `listBuckets`, `readBuckets`, `writeBuckets`, `deleteBuckets` (for restic restore)
-   - Bucket Restriction: restrict to the bucket just created
-   - **Copy `Application Key ID` and immediately store in Proton Pass:**
-     - Path: `Projekt <Tenant> → B2/key_id`
-   - **Copy `Application Key` (secret) and immediately store in Proton Pass:**
-     - Path: `Projekt <Tenant> → B2/app_key`
+   - Name: `restic-<target>`
+   - Capabilities: `listBuckets`, `readBuckets`, `writeBuckets`, `deleteFiles`
+   - Bucket Restriction: select the bucket just created
+   - **Copy `Application Key ID` → immediately store in Proton Pass:**
+     - Vault: `webapp-management` → Item: `server-<target>` → Field: `b2_key_id`
+   - **Copy `Application Key` secret → immediately store in Proton Pass:**
+     - Vault: `webapp-management` → Item: `server-<target>` → Field: `b2_app_key`
    - Do NOT save locally
 
-4. **Generate and store Restic password in Proton Pass:**
-   - Generate a strong random password (64+ chars): `openssl rand -base64 48`
-   - **Store in Proton Pass:**
-     - Path: `Projekt <Tenant> → B2/restic_password`
-   - **IMPORTANT:** You cannot recover this password. Store it ONLY in Proton Pass.
+4. **Build and store the restic repo URL in Proton Pass:**
+   - Format: `s3:s3.<region>.backblazeb2.com/<bucket-name>`
+   - Find the region: Buckets → select bucket → Endpoint column
+   - Example: `s3:s3.us-west-004.backblazeb2.com/staging-backups`
+   - **Store in Proton Pass:** `server-<target>` → Field: `restic_repo`
 
-5. **Note the bucket endpoint:**
-   - Buckets → select the bucket → copy the endpoint
-   - Format: `s3.<region>.backblazeb2.com` (e.g. `s3.us-west-004.backblazeb2.com`)
-   - Note the region for use in A.3
+5. **`restic_password` was generated in A.0.2** and already stored in Proton Pass.
+   Verify it is non-empty there.
 
-**PAUSE POINT:** All B2 secrets must be in Proton Pass before A.0.5.
+**PAUSE POINT:** All B2 fields populated in `server-<target>` in Proton Pass.
 
 ---
 
-#### A.0.5 VPS Server: Procurement and initial SSH config
+#### A.0.8 VPS Server: Procurement
 
 Order a fresh server from your VPS provider (Hetzner, Linode, OVH, netcup, etc.). Minimum specs:
 
@@ -290,37 +377,17 @@ Order a fresh server from your VPS provider (Hetzner, Linode, OVH, netcup, etc.)
 | OS | Ubuntu 22.04 LTS | Ubuntu 24.04 LTS |
 | IPv4 | 1 public IP | 1 public IP |
 
-**At provisioning time:**
+> **No SSH keys needed.** Provisioning uses Tailscale-SSH keyless access via the `provision`
+> user. The Tailscale auth key (stored in Proton in A.0.2) is sufficient for ansible-provision
+> to reach the server after first-boot. Root password access at the VPS console is the
+> break-glass path.
+
 1. Choose Ubuntu 22.04 LTS or 24.04 LTS as the OS image
-2. **Generate an SSH key pair for root access** (if you don't have one):
-   ```bash
-   ssh-keygen -t ed25519 -f vps-root-key -N "" -C "root@<your-server>"
-   # This creates vps-root-key (private) and vps-root-key.pub (public)
-   # Keep the private key safe — do NOT upload to VPS provider
-   ```
-3. Upload the **public key** (vps-root-key.pub) to your VPS provider during provisioning
-   - The VPS provider will install this as `authorized_keys` for the `root` user
-4. **IMPORTANT:** Do NOT use a root password. SSH key-only access is much stronger.
-5. After the server boots, verify SSH access:
-   ```bash
-   ssh -i vps-root-key root@<server-public-ip>
-   # Expected: SSH login without password prompt
-   ```
-6. **Store the root SSH private key in Proton Pass:**
-   ```bash
-   cat vps-root-key | pbcopy  # macOS
-   # or: cat vps-root-key     # then select all and copy
-   # Paste into Proton Pass → Projekt <Tenant> → SSH → root_private_key
-   ```
-7. **Delete the local key file:**
-   ```bash
-   rm vps-root-key vps-root-key.pub
-   # Never keep the private key locally
-   ```
-8. **Note the server details for use in A.3:**
-   - `SSH_HOST`: the public IP address (e.g. `203.0.113.10`)
-   - `SSH_USER`: `root` (for initial provisioning; Ansible will create a `deploy` user)
-   - All SSH private keys are now in Proton Pass (root key + deploy-user keys from A.0.1)
+2. Set a strong root password at the VPS provider (used only for console break-glass)
+3. After the server boots, **note the public IP address**
+4. Verify the server is reachable (from the VPS console if needed, or via `ping <ip>`)
+
+**Note the server's public IP** — you will need it for DNS A records in A.0.6.
 
 ---
 
@@ -370,64 +437,57 @@ targets:
 
 Commit just the rename if you want it tracked, or keep it local-only (it is already in `.gitignore`).
 
-### A.3 Sync secrets from Proton Pass to GitHub Environments
+### A.3 Update secrets.yaml and sync to GitHub
 
-All your secrets are now stored in Proton Pass (from A.0). `sync-secrets` reads from Proton and pushes to GitHub Environments.
+`secrets.yaml` (committed) is the **schema**: it declares which GitHub Secret keys exist and maps them to Proton Pass paths. It follows the two-vault architecture from A.0.1.
 
-1. **The `secrets.yaml` file** (committed to the repo) defines which keys exist and where to read them from Proton Pass.
-   - Example source paths:
-     ```yaml
-     SSH_HOST:
-       source: proton://Projekt <Tenant-Name>/Infrastructure/ssh_host
-     TAILSCALE_AUTH_KEY:
-       source: proton://Projekt <Tenant-Name>/Tailscale/auth_key
-     CLOUDFLARE_TUNNEL_TOKEN:
-       source: proton://Projekt <Tenant-Name>/Cloudflare/tunnel_token
-     ```
+1. **Open `secrets.yaml`** and update the path placeholders to match your actual setup:
 
-2. **Update `secrets.yaml`** if you used different Proton Path names in A.0.
-   - Replace all `Projekt <Tenant-Name>` with your actual tenant vault name
-   - If you stored secrets under different folder names, update the paths accordingly
-
-3. **Create the `secrets.values.yaml` file** (gitignored) with just the `SSH_HOST` and basic structure:
-   ```bash
-   cp secrets.values.example.yaml secrets.values.yaml
-   ```
-
-4. **Edit `secrets.values.yaml`** with the bare minimum:
+   The file uses `{target}` as a placeholder for the inventory target name. Example paths it should contain (already in the template):
    ```yaml
-   targets:
-     production:
-       SSH_HOST: "203.0.113.10"      # Public IP of the VPS from A.0.5
-       SSH_USER: "root"               # Initial user; Ansible creates 'deploy' user later
+   TAILSCALE_AUTH_KEY:
+     source_template: "proton://webapp-management/server-{target}/tailnet_auth_key"
+   CLOUDFLARE_TUNNEL_TOKEN:
+     source_template: "proton://webapp-management/server-{target}/tunnel_token"
+   B2_KEY_ID:
+     source_template: "proton://webapp-management/server-{target}/b2_key_id"
+   CLOUDFLARE_API_TOKEN:
+     source: "proton://webapp-management/cloudflare-api/api_token"
+   TS_OAUTH_CLIENT_ID:
+     source: "proton://webapp-management/ci-tokens/ts_oauth_client_id"
+   ORIGIN_CERT_<YOUR_DOMAIN>:
+     source: "proton://webapp-management/domain-<your-domain>/origin_cert"
    ```
-   All other values will be read from Proton Pass.
 
-5. **Generate Traefik Dashboard Auth** and store in Proton Pass:
+   **Paths that need adapting:**
+   - Replace `domain-<your-domain>` entries to match your actual domain item name(s) in Proton
+   - Ensure `config.target_repo` is set to `<your-org>/<your-infra-repo>`
+
+2. **Verify Traefik dashboard auth is in Proton Pass:**
    ```bash
-   # Install htpasswd (comes with apache2-utils)
+   # If missing, generate:
    sudo apt-get install apache2-utils
-
-   # Generate (replace "admin" with your username)
-   htpasswd -c /dev/null admin
-   # Paste the password when prompted. Output: admin:$apr1$XXXX$XXXX
-   
-   # Store in Proton Pass:
-   # Path: Projekt <Tenant> → Traefik → dashboard_auth
+   htpasswd -nb admin <strong-password>
+   # Output: admin:$apr1$XXXX$...
+   # Store in: webapp-management vault → traefik item → dashboard_auth field
    ```
 
-6. **Push secrets from Proton to GitHub:**
+3. **Push server-class secrets to GitHub for each target:**
    ```bash
-   sync-secrets \
-     --server \
-     --secret-source proton \
-     --secret-target production
+   # From within your webapp-management repo clone:
+   sync-secrets --server --secret-source proton --secret-target <target>
+   # Example:
+   sync-secrets --server --secret-source proton --secret-target staging
+   sync-secrets --server --secret-source proton --secret-target main-prod
    ```
-   This reads `secrets.yaml` (the schema) and pulls all values from Proton Pass that match the declared paths.
 
-7. **Verify in GitHub:**
-   - Repo → Settings → Environments → production → Environment secrets
-   - All declared keys should be present (values are masked)
+   `sync-secrets` reads `secrets.yaml` + `inventory/inventory.yaml` to resolve which
+   GitHub Environment to push to, then fetches each `source:` / `source_template:`
+   value from Proton Pass and pushes it as a GitHub Environment Secret.
+
+4. **Verify in GitHub:**
+   - Repo → Settings → Environments → `<target>` → Environment secrets
+   - All declared keys should appear (values are masked)
 
 **Full reference** (which keys are required, formats, rotation) is in [SECRETS.md](SECRETS.md).
 
