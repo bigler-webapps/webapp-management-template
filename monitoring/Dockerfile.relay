@@ -1,0 +1,13 @@
+# Kuma → Claude Relay
+# S33: Pin digest via Renovate (add to renovate-config/auto-merge.json: infra-managers)
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir requests docker==7.*
+
+COPY kuma_claude_relay.py .
+
+EXPOSE 8090
+
+CMD ["python", "kuma_claude_relay.py"]

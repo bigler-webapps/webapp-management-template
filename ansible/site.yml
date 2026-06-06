@@ -69,6 +69,19 @@
         exclusive: false
       loop: "{{ query('ansible.builtin.fileglob', playbook_dir + '/../access/root/*.pub') }}"
 
+    # Expose Claude relay on the tailnet so the monitoring host (Kuma) can
+    # POST webhook alerts to it. Docker binds the relay on host:8091 to avoid
+    # conflict with tailscaled's own :8090 listener. Tailscale serve proxies
+    # external HTTPS:8090 -> localhost:8091 -> container:8090.
+    # Runs on staging AND all prod servers (stage + prod groups).
+    # tailscale serve dedupes identical config — idempotent; no changed_when needed.
+    - name: Serve Claude relay over Tailscale HTTPS on :8090 -> localhost:8091
+      become: true
+      ansible.builtin.command:
+        cmd: tailscale serve --bg --https=8090 http://127.0.0.1:8091
+      when: "'stage' in group_names or 'prod' in group_names"
+      changed_when: false
+
 # S214 — Loki + Grafana run on the dedicated `monitoring` host (central log
 # collector), kept off the churny staging box for observability independence.
 # Promtail on all servers ships logs here via Tailscale. Trust boundary

@@ -22,4 +22,20 @@
 # Other supported types include: telegram, slack, smtp, ntfy, gotify, …
 # See https://uptime-kuma-api.readthedocs.io for the parameter names per type.
 
-notifications: []
+notifications:
+  # Claude Relay notifications — one per server.
+  # Each relay fetches Docker logs from its own host and forwards to the
+  # Claude Code Kuma-Alert-Routine. Assigned per-monitor via kuma_sync.py
+  # (reads environments.production.server from project.yaml).
+  # All default: false — explicit assignment only, no blanket application.
+  #
+  # Replace <your-tailnet> with your Tailscale tailnet domain (e.g. tail1234ab.ts.net).
+  # Replace <server-name> with your actual server hostnames.
+  # Add one entry per app server that runs the claude-relay container.
+  #
+  # - name: claude-relay-<server-name>
+  #   type: webhook
+  #   default: false
+  #   config:
+  #     webhookURL: "https://<server-name>.<your-tailnet>.ts.net:8090/webhook"
+  #     webhookContentType: "json"

@@ -26,3 +26,15 @@ tailscale_authkey: "{{ lookup('env', 'TAILSCALE_AUTH_KEY') }}"
 # force a re-up with the new flags.
 tailscale_advertise_tags:
   - tag:server-stage
+
+# S32 — restrict SSH to Tailnet CIDR only (public SSH closure).
+# UFW closes port 22 to public IPv4/IPv6; break-glass via cloud console.
+ufw_allow_in:
+  - from: "100.64.0.0/10"
+    port: "22"
+    proto: tcp
+    comment: "ssh — tailnet only (S32)"
+  - from: "100.64.0.0/10"
+    port: "8090"
+    proto: tcp
+    comment: "claude-relay webhook — tailnet only (Kuma -> relay)"

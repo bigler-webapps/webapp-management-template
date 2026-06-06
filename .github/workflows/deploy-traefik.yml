@@ -26,12 +26,14 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Deploy Traefik stack
-        uses: bigler-webapps/workflow-templates/.github/actions/deploy-traefik@v2.0.3
+        uses: bigler-webapps/workflow-templates/.github/actions/deploy-traefik@v2.1.3
         with:
           target: ${{ inputs.target }}
           target_environment: ${{ inputs.target_environment }}
           remote_path: /srv/infrastructure/webapp-management
+          # v2.0.0+: Tailscale-SSH-only — no ssh_private_key.
           ssh_host: ${{ secrets.SSH_HOST }}
           ssh_user: ${{ secrets.SSH_USER }}
-          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts_oauth_secret: ${{ secrets.TS_OAUTH_SECRET }}
           secrets_context_json: ${{ toJson(secrets) }}

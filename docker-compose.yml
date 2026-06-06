@@ -6,6 +6,7 @@
 #   - Cloudflare Tunnel (outbound CF edge connection)
 #   - Two docker-socket-proxy instances (one for Traefik, one for Autoheal)
 #   - Autoheal (automatic restart of unhealthy containers)
+#   - Claude Relay (Kuma webhook -> Claude Routine forwarding with Docker log enrichment)
 #
 # NOT included (intentionally minimal — add later if you adopt them):
 #   - WireGuard (replaced by Tailscale on host; see ARCHITECTURE.md).
@@ -198,6 +199,53 @@ services:
   # PRs against this repo) rather than by host-side auto-pulls. With pinned
   # tags + Renovate the previous watchtower setup was a no-op anyway.
 
+  # ── Kuma -> Claude Relay ─────────────────────────────────────────────────
+  # Receives Kuma webhooks (DOWN events), enriches them with Docker logs, and
+  # forwards them to the Claude Code Kuma-Alert-Routine.
+  #
+  # Reachable via Tailscale Serve:
+  #   https://<server>.<your-tailnet>.ts.net:8090/webhook
+  # Kuma notification: claude-relay-<server> in monitoring/notifications.yml
+  #
+  # Secrets in .env (via sync-secrets from your secret store):
+  #   CLAUDE_ROUTINE_ENDPOINT -- API URL of the Kuma-Alert Routine
+  #   CLAUDE_ROUTINE_TOKEN    -- Bearer token (sk-ant-oat01-...)
+  #
+  # Runs on staging AND all production servers. Each instance fetches logs
+  # from its own local Docker daemon.
+  # Mitigations:
+  #   - Socket-proxy gating: CONTAINERS=1 + LOGS=1 only (no write access)
+  #   - S33: pin Dockerfile.relay digest once first build digest is known
+  docker-socket-proxy-relay:
+    image: tecnativa/docker-socket-proxy:v0.4.2@sha256:bd2241b3bec83abcff25927a0a7ae518e0c5bef624b3cc247dcb31e68b53f417
+    container_name: docker-socket-proxy-relay
+    profiles: ["staging", "main"]
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      LOGS: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - relay-net
+
+  claude-relay:
+    build:
+      context: ./monitoring
+      dockerfile: Dockerfile.relay
+    container_name: claude-relay
+    profiles: ["staging", "main"]
+    restart: unless-stopped
+    depends_on:
+      - docker-socket-proxy-relay
+    ports:
+      - "127.0.0.1:8091:8090"
+    environment:
+      - CLAUDE_ROUTINE_ENDPOINT=${CLAUDE_ROUTINE_ENDPOINT}
+      - CLAUDE_ROUTINE_TOKEN=${CLAUDE_ROUTINE_TOKEN}
+    networks:
+      - relay-net
+
 networks:
   proxy:
     name: traefik_proxy
@@ -206,3 +254,8 @@ networks:
     # Internal-only network: autoheal + docker-socket-proxy-autoheal talk to
     # each other over TCP, no external routes.
     internal: true
+  relay-net:
+    # Bridge network: claude-relay + docker-socket-proxy-relay.
+    # Not internal: claude-relay needs internet access for the Claude API
+    # and host port binding for Kuma webhooks. Security via UFW (port 8090
+    # restricted to Tailscale CIDR) and docker-socket-proxy (CONTAINERS+LOGS only).
