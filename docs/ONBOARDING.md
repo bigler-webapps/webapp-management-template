@@ -1,24 +1,4 @@
-**Step 1: Add the new tenant to kuma-sync.yml**
-
-The `Kuma Monitor Sync` workflow (`webapp-management/.github/workflows/kuma-sync.yml`)
-has a hardcoded `APPS` variable listing all monitored tenants. A new tenant is NOT
-auto-discovered -- you must add it:
-
-```bash
-# In webapp-management repo, edit .github/workflows/kuma-sync.yml
-# Find both APPS= lines (~line 90 and ~line 115) and add your tenant slug:
-APPS="bigler-consult hram ... <new-tenant-slug>"
-# Commit and push to main
-```
-
-**Step 2: Trigger Kuma Monitor Sync**
-
-```bash
-cd <webapps-root>/webapp-management
-gh workflow run kuma-sync.yml
-```
-
-This creates Kuma monitors for all apps in the APPS list, reading each app's `project.yaml` for domains and server.# Onboarding Guide -- Infrastructure and App
+# Onboarding Guide -- Infrastructure and App
 
 > Agent-optimized. Stop at every PAUSE POINT for required human action or verification.
 >
@@ -718,6 +698,59 @@ gh workflow run deploy-traefik.yml --field target=staging
 
 **VERIFY:** `curl -I https://<subdomain>.<domain>/` returns HTTP 200 or the expected
 redirect/auth response -- NOT 502 or 503.
+
+#### A.7.4 CF Zero Trust Access — dashboard and admin-UI protection
+
+CF Access is the **primary authentication gate** for all dashboard/admin-UI hostnames
+(Traefik dashboard, Uptime Kuma). It intercepts requests at the Cloudflare edge — before
+they reach the tunnel — and presents a login page backed by GitHub OAuth or one-time PIN.
+
+`TRAEFIK_DASHBOARD_AUTH` (BasicAuth) is a **secondary defense-in-depth** layer. It catches
+direct-to-origin requests (e.g. via Tailnet) that bypass CF Access. It is not the primary
+user-facing gate.
+
+**What you need to configure once per CF account (manual dashboard steps):**
+
+1. **Create Identity Providers** in Zero Trust → Settings → Authentication → Login methods:
+   - Add **GitHub OAuth**: enter your GitHub OAuth App Client ID + Secret
+   - Add **One-time PIN**: no credentials needed, just enable it
+   - After saving each IdP, click on it → the URL contains the IdP UUID — copy it
+
+2. **Update `terraform/cf-access-example.tf`** with your IdP UUIDs and domain names:
+   ```hcl
+   github_idp_id = "61f5c3fc-..."   # from CF Dashboard
+   otp_idp_id    = "8d3f0186-..."   # from CF Dashboard
+
+   access_apps = {
+     kuma       = { name = "Uptime Kuma", domain = "status.<your-domain>" }
+     traefik_prod = { name = "Traefik Dashboard (prod)", domain = "traefik.<your-domain>" }
+   }
+
+   access_allowed_emails = ["you@example.com"]
+   ```
+
+3. **Ensure `CLOUDFLARE_ACCESS_API_TOKEN` is in Proton Pass** and synced to GitHub:
+   - The token needs `Zero Trust: Access: Apps and Policies - Edit` + `Identity Providers: Read`
+   - Store in: `webapp-management` vault → `cloudflare` item → `access-api-token` field
+   - `secrets.yaml` already declares `CLOUDFLARE_ACCESS_API_TOKEN` with the correct path
+
+4. **Add `cloudflare_access_api_token` to the Terraform Cloud workspace** before applying:
+   - Terraform Cloud → workspace → Variables → Add variable
+   - Key: `cloudflare_access_api_token`, Value: the token, Type: Terraform variable, Sensitive: yes
+   - Without this step, `terraform apply` fails with a missing-variable error from TF Cloud.
+
+5. **Apply Terraform** to create the Access applications and inline policies:
+   ```bash
+   cd <webapps-root>/webapp-management
+   terraform apply -target='cloudflare_zero_trust_access_application.app'
+   ```
+
+> **Note**: CF Access is NOT automatically updated by `deploy-traefik.yml`. Adding a new
+> dashboard hostname requires adding an entry to `access_apps` in `cf-access-example.tf`
+> and re-running `terraform apply`.
+
+**VERIFY:** Open `https://status.<your-domain>` in a private browser window. You should see
+the CF Access login page (not the app directly, and not a BasicAuth prompt).
 
 ### A.8 Sync Kuma notification channels (Tailnet-Serve path :8443)
 
