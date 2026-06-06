@@ -1,0 +1,23 @@
+# Cloudflare Origin Certificates für Traefik
+#
+# Cert + Key kommen vom deploy-traefik composite action, der sie aus GitHub
+# Environment Secrets (synced aus Proton Pass) vor dem rsync nach ./certs/
+# schreibt. Files sind gitignored.
+#
+# Füge pro Domain einen Certificate-Block hinzu. Der file_basename muss mit dem
+# write_cert-Aufruf in deploy-traefik.yml übereinstimmen.
+# Beispiel für example.com (wildcard *.example.com + apex):
+
+tls:
+  certificates:
+    # TODO: replace with your actual domain(s). Add one block per domain.
+    - certFile: /etc/traefik/certs/example-com.crt
+      keyFile: /etc/traefik/certs/example-com.key
+      stores:
+        - default
+
+    # Example second domain:
+    # - certFile: /etc/traefik/certs/other-domain-com.crt
+    #   keyFile: /etc/traefik/certs/other-domain-com.key
+    #   stores:
+    #     - default

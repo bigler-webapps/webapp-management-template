@@ -10,7 +10,7 @@ name: Sync Staging (cross-server restore)
 # Architecture mirrors backup.yml: matrix jobs call the cross-org composites
 # directly (no cross-org reusable workflow_call, which would block env-scoped
 # secrets from flowing into the called workflow). The composites live in
-# YOUR_GITHUB_ORG/workflow-templates; this file is just the choreography.
+# bigler-webapps/workflow-templates; this file is just the choreography.
 
 on:
   # Auto-trigger after the nightly backup workflow finishes. Per-target
@@ -132,7 +132,7 @@ jobs:
     steps:
       # restore-source-export does NOT SSH (pulls restic from B2 on the runner).
       # No Tailnet inputs needed; safe to stay on the latest v1.x.
-      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-source-export@v2.0.3
+      - uses: bigler-webapps/workflow-templates/.github/actions/restore-source-export@v2.0.3
         with:
           source_target: ${{ matrix.source }}
           app_name: ${{ matrix.app }}
@@ -161,14 +161,14 @@ jobs:
       - name: Checkout webapp-ops-scripts
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          repository: YOUR_GITHUB_ORG/webapp-ops-scripts
+          repository: bigler-webapps/webapp-ops-scripts
           # Pinned to the webapp-ops-scripts commit that introduced
           # dump-only / import-only modes. Bump deliberately after re-review.
           ref: c47d6ba3e36497d28b96c867d8677aacb1a356cb
           path: ops-scripts
 
       # restore-dest-import SSHes to staging; Tailnet path active.
-      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-dest-import@v2.0.3
+      - uses: bigler-webapps/workflow-templates/.github/actions/restore-dest-import@v2.0.3
         with:
           dest_target: staging
           app_name: ${{ matrix.app }}
@@ -176,7 +176,7 @@ jobs:
           auto_restart: 'true'
           dest_compose_path: /srv/apps/${{ matrix.app }}_stage
           # v2.0.0: Tailscale-SSH-only — no ssh_private_key.
-          ssh_host: staging.your-tailnet-domain
+          ssh_host: staging.tail990d7f.ts.net
           ssh_user: deploy
           # Artifact name is generated deterministically by restore-source-export
           # as xrestore-{run_id}-{run_attempt}-{source_target}-{app_name}. We

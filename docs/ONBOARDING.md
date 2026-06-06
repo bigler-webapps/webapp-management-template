@@ -1,24 +1,4 @@
-**Step 1: Add the new tenant to kuma-sync.yml**
-
-The `Kuma Monitor Sync` workflow (`webapp-management/.github/workflows/kuma-sync.yml`)
-has a hardcoded `APPS` variable listing all monitored tenants. A new tenant is NOT
-auto-discovered -- you must add it:
-
-```bash
-# In webapp-management repo, edit .github/workflows/kuma-sync.yml
-# Find both APPS= lines (~line 90 and ~line 115) and add your tenant slug:
-APPS="bigler-consult hram ... <new-tenant-slug>"
-# Commit and push to main
-```
-
-**Step 2: Trigger Kuma Monitor Sync**
-
-```bash
-cd <webapps-root>/webapp-management
-gh workflow run kuma-sync.yml
-```
-
-This creates Kuma monitors for all apps in the APPS list, reading each app's `project.yaml` for domains and server.# Onboarding Guide -- Infrastructure and App
+# Onboarding Guide -- Infrastructure and App
 
 > Agent-optimized. Stop at every PAUSE POINT for required human action or verification.
 >
@@ -198,14 +178,14 @@ For each domain that needs Cloudflare Origin Certificate TLS (skip if the domain
 
 2. **Create a new item** named `domain-<domain>` (e.g. `domain-example.com`)
 
-3. **Add these custom fields** — values will be filled in during A.0.6 (after you create the Origin Cert):
+3. **Add these custom fields** — values come from `terraform output -raw` in A.0.6 Step 3 (Terraform-managed Origin Cert):
 
    | Field name | Value |
    |---|---|
-   | `origin_cert` | PEM content of the Cloudflare Origin Certificate |
-   | `origin_key` | PEM content of the private key |
+   | `origin_cert` | PEM from `terraform output -raw origin_<slug>_cert` |
+   | `origin_key` | PEM from `terraform output -raw origin_<slug>_key` |
 
-   > Leave these empty for now. You will fill them in during A.0.6.
+   > Leave these empty for now. You will fill them in during A.0.6 Step 3.
 
 ---
 
@@ -326,21 +306,38 @@ If this domain is not yet in Cloudflare:
    # Expected: Cloudflare nameserver addresses
    ```
 
-**Step 3: Create Cloudflare Origin Certificate and store in Proton Pass**
+**Step 3: Create Cloudflare Origin Certificate via Terraform and store in Proton Pass**
 
 TLS uses Cloudflare Origin Certificates — NOT ACME / Let's Encrypt.
 
-1. Cloudflare dashboard → select domain → SSL/TLS → Origin Server → Create Certificate
-2. Select hostnames: `*.example.com` and `example.com`
-3. Choose validity: 15 years
-4. Copy the **Certificate** (PEM) → **immediately store in Proton Pass:**
-   - Vault: `webapp-management` → Item: `domain-<domain>` → Field: `origin_cert`
-5. Copy the **Private Key** (PEM) → **immediately store in Proton Pass:**
-   - Vault: `webapp-management` → Item: `domain-<domain>` → Field: `origin_key`
-6. Do NOT save either value locally
+The Origin Certificate is **Terraform-managed**, not hand-created in the CF dashboard.
+This keeps the key out of clipboards/editors (the "CF generates both" path caused
+repeated cert/key mismatches) and makes the cert reproducible from state.
 
-> The `deploy-traefik` workflow reads these from GitHub Secrets (synced from Proton by
-> `sync-secrets --server`) and writes them to `./certs/<domain>.pem` and `.key` on the server.
+1. Copy `terraform/origin-cert-example.tf` → `terraform/origin-cert-<domain-slug>.tf`
+   (e.g. `origin-cert-example-com.tf`).
+2. Replace every `example_com` / `example.com` with your domain. Keep the wildcard
+   FIRST in `hostnames` (`["*.example.com", "example.com"]`) — v5 is list-order-sensitive.
+3. Apply:
+   ```bash
+   terraform apply
+   terraform output -raw origin_<domain_slug>_cert   # → copy
+   terraform output -raw origin_<domain_slug>_key    # → copy
+   ```
+4. Store **both** in Proton Pass **immediately** (the CF API returns the key only once):
+   - Vault: `webapp-management` → Item: `domain-<domain>` → Field: `origin_cert`
+   - Vault: `webapp-management` → Item: `domain-<domain>` → Field: `origin_key`
+5. Do NOT save either value to local disk.
+
+> The `Deploy Infrastructure` workflow reads these from GitHub Secrets (synced from Proton by
+> `sync-secrets --server`) and writes them to `./certs/<domain-slug>.crt` / `.key` on the server.
+> See A.7.2. **Prerequisite:** your `deploy-traefik.yml` must contain the "Write origin certs
+> from secrets" step and the cert must be listed in `dynamic/origin-certs.yml` — repos created
+> from an older template revision may lack both (see A.7.2 note).
+>
+> **Fallback only** (if Terraform is unavailable): CF dashboard → SSL/TLS → Origin Server →
+> Create Certificate (hostnames `*.<domain>` + `<domain>`, 15y) → paste both PEMs into the same
+> Proton fields. The CSR/key match is still guaranteed, but the cert is then not tracked in state.
 
 **Step 4: Create DNS records**
 
@@ -444,6 +441,14 @@ Clone it locally:
 ```bash
 git clone git@github.com:<owner>/webapps-infra.git
 cd webapps-infra
+```
+
+5. **Verify org references** — for `bigler-webapps` tenants all workflow references are already set. If forking for a different GitHub org, search and replace the org placeholder:
+
+```bash
+grep -r YOUR_GITHUB_ORG .github/
+# Expected: no output (all replaced with bigler-webapps)
+# If output appears, replace with your org name.
 ```
 
 ### A.2 Adapt the inventory
@@ -570,17 +575,24 @@ JSON
 
 ### A.5 Provision the server (ansible-provision.yml)
 
+**Authentication: Tailscale-SSH keyless — no SSH_PRIVATE_KEY_ROOT.**
+
+The `ansible-provision.yml` CI workflow joins the tailnet via a dedicated Tailscale OAuth client (`TS_PROVISION_OAUTH_CLIENT_ID` / `TS_PROVISION_OAUTH_SECRET`, tag `tag:ci-provision`) and connects to the server as the `provision` user via Tailscale-SSH. Do NOT create or add an `SSH_PRIVATE_KEY_ROOT` secret — it is not used.
+
+**Required secrets** (per-environment, synced via `sync-secrets --server --secret-source proton --secret-target <target>`):
+- `TS_PROVISION_OAUTH_CLIENT_ID` — from `webapp-management/ci-tokens/ts_provision_oauth_client_id` in Proton
+- `TS_PROVISION_OAUTH_SECRET` — from `webapp-management/ci-tokens/ts_provision_oauth_secret` in Proton
+- `TAILSCALE_AUTH_KEY` — from `webapp-management/server-<target>/tailnet_auth_key` in Proton (staging only; used by the Ansible Tailscale role on first provision)
+
+---
+
 **First-run bootstrap (fresh server — OPERATOR step, NOT CI):**
 
-The `ansible-provision.yml` CI workflow connects as the `provision` user via Tailscale-SSH. A fresh server has neither the `provision` user nor Tailscale installed yet, so the CI workflow cannot reach it on the first run. You must bootstrap manually from a local machine that can SSH into the server via its public IP:
+A fresh server has neither the `provision` user nor Tailscale installed yet, so the CI workflow cannot reach it on the first run. You must bootstrap manually from a local machine that can SSH into the server via its public IP:
 
 ```bash
-# From WSL / Linux on your admin machine:
 cd <webapps-root>/webapp-management/ansible
-
-# Temporarily override the host to use the public IP (the host_vars file uses
-# the Tailscale hostname which does not exist yet on a fresh server):
-ansible-playbook site.yml \n  --inventory inventory/hosts.yml \n  --limit <target> \n  --extra-vars "ansible_host=<server-public-ip> ansible_user=root" \n  --ask-pass
+ansible-playbook site.yml --inventory inventory/hosts.yml --limit <target> --extra-vars "ansible_host=<server-public-ip> ansible_user=root" --ask-pass
 ```
 
 This first run installs Tailscale (using the auth key from Proton/GitHub), creates the `provision` user, and enables Tailscale-SSH. After it completes:
@@ -687,14 +699,34 @@ The `Deploy Infrastructure` workflow reads these secrets and writes the files to
 The slug format is: domain with dots and hyphens only (e.g. `example.com` → `example-com`).
 
 **You do not manually place cert files on the server.** Triggering `Deploy Infrastructure`
-(A.6 step 2) handles this automatically.
+(A.6 step 2) handles this automatically — **provided your repo has the wiring for it**:
+
+1. `.github/workflows/deploy-traefik.yml` contains a `Write origin certs from secrets` step
+   that maps `ORIGIN_CERT_<SLUG>` / `ORIGIN_KEY_<SLUG>` → `./certs/<slug>.crt|.key` for YOUR
+   domain. (Repos created from an older template revision may be missing this step entirely —
+   add one `write_cert` block per domain.)
+2. `dynamic/origin-certs.yml` lists the cert:
+   ```yaml
+   tls:
+     certificates:
+       - certFile: /etc/traefik/certs/<slug>.crt
+         keyFile:  /etc/traefik/certs/<slug>.key
+   ```
+3. Traefik serves it by SNI (file provider, `--providers.file.watch=true`). The dashboard
+   router uses `tls=true` (file-provider cert) — **not** an ACME `certresolver`, which cannot
+   complete behind cloudflared.
 
 For staging subdomains under your apex domain: the existing wildcard cert `*.<your-apex-domain>`
 typically already covers new subdomains. Verify coverage before creating a new cert.
 
 #### A.7.3 Update tunnel ingress
 
-In `webapp-management/cloudflared/config.yml` add an entry for each new hostname:
+> **Tunnel ingress is NOT updated automatically by `deploy-traefik.yml`.** You must edit
+> `cloudflared/config.yml` manually (or via a Terraform change) and then redeploy.
+> Each new hostname that should be reachable via the Cloudflare Tunnel requires an explicit
+> ingress rule — cloudflared does not auto-discover Traefik routes.
+
+In your `webapp-management` repo, edit `cloudflared/config.yml` and add an entry for each new hostname:
 
 ```yaml
 ingress:
@@ -707,13 +739,11 @@ ingress:
   - service: http_status:404
 ```
 
-Then redeploy cloudflared:
+Commit and push, then run the Deploy Infrastructure workflow (auto-deploys on push to `main`,
+or manually dispatch):
 
 ```bash
-cd <webapps-root>/webapp-management
-docker compose up -d --force-recreate cloudflared
-# OR via GitHub Actions:
-gh workflow run deploy-traefik.yml --field target=staging
+gh workflow run deploy-traefik.yml --field target=<target>
 ```
 
 **VERIFY:** `curl -I https://<subdomain>.<domain>/` returns HTTP 200 or the expected
@@ -1265,17 +1295,33 @@ a tracked repo.
 
 ### B.10 Register app monitoring
 
+App monitors are registered by editing `kuma-sync.yml` in the `webapp-management` repo and
+running `kuma-sync.yml`. This is **not** `sync-kuma-notifications.yml` — that workflow only
+syncs notification channels (Discord webhooks, etc.) and does not touch monitors.
+
+**Step 1: Add the new tenant to kuma-sync.yml**
+
+In the `webapp-management` repo, edit `.github/workflows/kuma-sync.yml`. Find both `APPS=`
+lines (~line 90 and ~line 115) and add your tenant slug:
+
 ```bash
-cd <webapps-root>/<tenant-slug>
-# register-kuma-monitors composite reads project.yaml + creates Kuma monitors
-gh workflow run main.yml --field environment=staging
-# Or: monitor-only run via webapp-management
-cd <webapps-root>/webapp-management
-gh workflow run sync-kuma-notifications.yml
+# Edit both occurrences:
+APPS="... <new-tenant-slug>"
+# Commit and push to main
 ```
 
-**VERIFY:** Open Kuma dashboard at `https://kuma.<your-domain>` and confirm a new monitor
-for `<tenant-slug>` appears and is green.
+**Step 2: Trigger Kuma Monitor Sync**
+
+```bash
+cd <webapps-root>/webapp-management
+gh workflow run kuma-sync.yml
+```
+
+This creates Kuma monitors for all apps in the `APPS` list, reading each app's `project.yaml`
+for domains and server targets.
+
+**VERIFY:** Open Kuma dashboard at `https://kuma.<your-domain>` (or via Tailnet) and confirm
+a new monitor for `<tenant-slug>` appears and turns green within a few minutes.
 
 ---
 

@@ -1,50 +1,90 @@
-name: Backup
+name: Backup, Verify & Sync
 
 # Daily restic backups to Backblaze B2.
 # Runs on schedule plus manual dispatch.
 
 on:
   schedule:
-    - cron: "25 2 * * *"  # 02:25 UTC daily
+    - cron: '25 2 * * *'  # Täglich 02:25 UTC
+
   workflow_dispatch:
     inputs:
       target:
-        description: "Target environment from inventory.yaml"
+        description: 'GitHub environment / inventory target for manual runs'
         required: true
         type: environment
-      sync_staging:
-        description: "After backup, sync prod data to staging"
-        required: false
-        type: boolean
-        default: false
+
+permissions:
+  contents: read
 
 jobs:
-  backup:
+  prepare:
     # Skip when running on the template repo itself (no secrets, no servers).
     # Tenant forks have a different repository name and run normally.
     if: github.repository != 'bigler-webapps/webapp-management-template'
     runs-on: ubuntu-latest
-    environment: ${{ inputs.target || 'production' }}
-    permissions:
-      contents: read
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
-      - name: Checkout webapp-ops-scripts
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - id: resolve
+        shell: bash
+        env:
+          # S20: target is `type: environment` (GH validates) but still pass
+          # via env to avoid Bash template interpolation; regex-validate as
+          # defence in depth.
+          INPUT_TARGET: ${{ inputs.target }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ -n "$INPUT_TARGET" ]; then
+            if [ -z "$INPUT_TARGET" ]; then
+              echo "❌ 'target' is required for manual backup runs."
+              exit 1
+            fi
+            if ! [[ "$INPUT_TARGET" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+              echo "::error::invalid target value"
+              exit 1
+            fi
+            M="$(python3 .github/scripts/resolve_inventory_targets.py --target "$INPUT_TARGET" --require-role backup)"
+          else
+            M="$(python3 .github/scripts/resolve_inventory_targets.py --role backup)"
+          fi
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+
+  full-backup-cycle:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    environment: ${{ matrix.github_environment }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: ⬇️ Checkout webapp-ops-scripts
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           repository: bigler-webapps/webapp-ops-scripts
           path: ops-scripts
 
-      - name: Run backup
-        uses: bigler-webapps/workflow-templates/.github/actions/backup@v2.0.3
+      - uses: bigler-webapps/workflow-templates/.github/actions/backup@v2.0.3
         with:
-          target: ${{ inputs.target || 'production' }}
-          sync_staging: ${{ inputs.sync_staging || false }}
-          ssh_host: ${{ secrets.SSH_HOST }}
-          ssh_user: ${{ secrets.SSH_USER }}
-          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          target: ${{ matrix.target }}
+          # Legacy same-server sync_staging is permanently disabled. Cross-server
+          # staging sync now runs in the separate `sync-staging.yml` workflow
+          # after the nightly backup completes.
+          sync_staging: 'false'
+          sync_staging_apps_json: ${{ toJson(matrix.sync_staging_apps) }}
+          # v2.0.0: Tailscale-SSH-only — no ssh_private_key.
+          ssh_host: ${{ matrix.target }}.tail990d7f.ts.net
+          ssh_user: deploy
           restic_repo_b2: ${{ secrets.RESTIC_REPO_B2 }}
           restic_password: ${{ secrets.RESTIC_PASSWORD }}
           b2_key_id: ${{ secrets.B2_KEY_ID }}
           b2_app_key: ${{ secrets.B2_APP_KEY }}
+          ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts_oauth_secret: ${{ secrets.TS_OAUTH_SECRET }}
+          ops_scripts_path: ops-scripts
+          infra_paths_file: backup/infra_paths.txt

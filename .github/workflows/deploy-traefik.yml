@@ -1,37 +1,136 @@
-name: Deploy Traefik Infrastructure
+name: Deploy Infrastructure
 
-# Deploys the Traefik infrastructure stack (Traefik, Uptime Kuma, etc.)
-# to the target server.
+# Deploys the Traefik infrastructure stack (Traefik, Uptime Kuma, cloudflared, etc.)
+# to the target server. Auto-deploys on push to main; also supports manual dispatch.
 
 on:
+  push:
+    branches:
+      - main
+
   workflow_dispatch:
     inputs:
       target:
-        description: "Target environment from inventory.yaml"
+        description: 'GitHub environment / inventory target for manual runs'
         required: true
         type: environment
-      target_environment:
-        description: "Target environment label for generate-env (production / staging)"
-        required: false
-        type: string
-        default: "production"
+      environment:
+        description: 'Target Environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+permissions:
+  contents: read
 
 jobs:
-  deploy:
+  prepare:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.target }}
-    permissions:
-      contents: read
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
-      - name: Deploy Traefik stack
-        uses: bigler-webapps/workflow-templates/.github/actions/deploy-traefik@v2.0.3
+      - id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.target }}" ]; then
+            M="$(python3 .github/scripts/resolve_inventory_targets.py --target "${{ inputs.target }}" --require-role traefik)"
+          else
+            M="$(python3 .github/scripts/resolve_inventory_targets.py --role traefik)"
+          fi
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      # One target failing should not cancel deploys to the other targets.
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    # Serialize deploys per target so two back-to-back merges (or a merge +
+    # manual dispatch) cannot race each other into a Docker Compose conflict.
+    concurrency:
+      group: deploy-infra-${{ matrix.target }}
+      cancel-in-progress: false
+    environment: ${{ matrix.github_environment }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      # Origin Cert + Key Files für Traefik vor rsync schreiben.
+      # Multi-line PEMs kommen aus GitHub Environment Secrets (synced via
+      # sync-secrets pipeline aus Proton Pass). Pro Zone: 1 .crt + 1 .key.
+      # Composite action ist domain-agnostic — sie rsynct nur ./certs/ mit.
+      #
+      # Add one write_cert block per domain. Secret naming convention:
+      #   ORIGIN_CERT_<DOMAIN_SLUG> / ORIGIN_KEY_<DOMAIN_SLUG>
+      #   where DOMAIN_SLUG = domain with dots/hyphens replaced by underscores,
+      #   uppercased (e.g. example.com → EXAMPLE_COM).
+      - name: Write origin certs from secrets
+        shell: bash
+        env:
+          # TODO: replace with your actual domain secret names.
+          # Example (add one pair per domain):
+          ORIGIN_CERT_EXAMPLE_COM: ${{ secrets.ORIGIN_CERT_EXAMPLE_COM }}
+          ORIGIN_KEY_EXAMPLE_COM: ${{ secrets.ORIGIN_KEY_EXAMPLE_COM }}
+        run: |
+          set -euo pipefail
+          mkdir -p ./certs
+
+          write_cert() {
+            local zone_label="$1"
+            local file_basename="$2"
+            local cert_val="$3"
+            local key_val="$4"
+
+            if [ -n "$cert_val" ] && [ -n "$key_val" ]; then
+              printf '%s\n' "$cert_val" > "./certs/${file_basename}.crt"
+              printf '%s\n' "$key_val"  > "./certs/${file_basename}.key"
+              chmod 644 "./certs/${file_basename}.crt"
+              chmod 600 "./certs/${file_basename}.key"
+              echo "✅ Origin cert + key for ${zone_label} written"
+            else
+              echo "⏭️  Skipping ${zone_label} origin cert (secrets empty)"
+            fi
+          }
+
+          # TODO: add one write_cert call per domain (matches dynamic/origin-certs.yml).
+          # Format: write_cert "<zone-label>" "<file-basename>" "$ORIGIN_CERT_<SLUG>" "$ORIGIN_KEY_<SLUG>"
+          write_cert "example.com" "example-com" "$ORIGIN_CERT_EXAMPLE_COM" "$ORIGIN_KEY_EXAMPLE_COM"
+
+      # OPTIONAL: Resolve monitoring tunnel token from Cloudflare API.
+      # Only needed if this repo manages a `monitoring` target with a named
+      # cloudflared tunnel. Add the following step if required:
+      #
+      # - name: Resolve monitoring tunnel token from Cloudflare API
+      #   id: cf-token
+      #   if: matrix.target == 'monitoring'
+      #   shell: bash
+      #   env:
+      #     CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      #     CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      #   run: |
+      #     ... (see webapp-management deploy-traefik.yml for full implementation)
+      #
+      # If added, also add the "Build secrets context" step and change
+      # secrets_context_json below to ${{ steps.ctx.outputs.json }}.
+
+      - uses: bigler-webapps/workflow-templates/.github/actions/deploy-traefik@v2.1.3
         with:
-          target: ${{ inputs.target }}
-          target_environment: ${{ inputs.target_environment }}
-          remote_path: /srv/infrastructure/webapp-management
-          ssh_host: ${{ secrets.SSH_HOST }}
-          ssh_user: ${{ secrets.SSH_USER }}
-          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          target: ${{ matrix.target }}
+          # target_environment drives generate-env (and therefore COMPOSE_PROJECT_NAME).
+          # Mapping: compose_profile=staging → environment=staging.
+          # Everything else (compose_profile=main) → environment=production.
+          # workflow_dispatch-supplied inputs.environment is an explicit override.
+          target_environment: ${{ inputs.environment || (matrix.compose_profile == 'staging' && 'staging' || 'production') }}
+          compose_profiles: ${{ matrix.compose_profile || 'main' }}
+          # v2.0.0: Tailscale-SSH-only — no ssh_private_key.
+          ssh_host: ${{ matrix.target }}.tail990d7f.ts.net
+          ssh_user: deploy
+          ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts_oauth_secret: ${{ secrets.TS_OAUTH_SECRET }}
           secrets_context_json: ${{ toJson(secrets) }}

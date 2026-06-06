@@ -2,7 +2,7 @@ name: Restore Cross-Server
 
 # Manual cross-server restore. Validates inventory + DESTROY token, then
 # orchestrates source-export → dest-import via the composites in
-# YOUR_GITHUB_ORG/workflow-templates.
+# bigler-webapps/workflow-templates.
 #
 # Use cases:
 #   • one-shot app migrations (e.g. innoservice main-prod → innoservice-prod)
@@ -130,7 +130,7 @@ jobs:
     steps:
       # restore-source-export does NOT SSH (pulls restic from B2 on the runner).
       # No Tailnet inputs needed; safe to stay on the latest v1.x.
-      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-source-export@v2.0.3
+      - uses: bigler-webapps/workflow-templates/.github/actions/restore-source-export@v2.0.3
         with:
           source_target: ${{ inputs.source_target }}
           app_name: ${{ inputs.app_name }}
@@ -156,14 +156,14 @@ jobs:
       - name: Checkout webapp-ops-scripts
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          repository: YOUR_GITHUB_ORG/webapp-ops-scripts
+          repository: bigler-webapps/webapp-ops-scripts
           # Pinned to the webapp-ops-scripts commit that introduced
           # dump-only / import-only modes. Bump deliberately after re-review.
           ref: c47d6ba3e36497d28b96c867d8677aacb1a356cb
           path: ops-scripts
 
       # restore-dest-import SSHes to the dest server; Tailnet path active.
-      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-dest-import@v2.0.3
+      - uses: bigler-webapps/workflow-templates/.github/actions/restore-dest-import@v2.0.3
         with:
           dest_target: ${{ inputs.dest_target }}
           app_name: ${{ inputs.app_name }}
@@ -171,7 +171,7 @@ jobs:
           auto_restart: ${{ inputs.auto_restart && 'true' || 'false' }}
           dest_compose_path: ${{ inputs.dest_compose_path }}
           # v2.0.0: Tailscale-SSH-only — no ssh_private_key.
-          ssh_host: ${{ inputs.dest_target }}.your-tailnet-domain
+          ssh_host: ${{ inputs.dest_target }}.tail990d7f.ts.net
           ssh_user: deploy
           # Artifact name is generated deterministically by restore-source-export
           # as xrestore-{run_id}-{run_attempt}-{source_target}-{app_name}.

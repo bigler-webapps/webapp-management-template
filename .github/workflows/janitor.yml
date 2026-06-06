@@ -1,39 +1,79 @@
-name: Janitor
+name: Janitor (maintenance)
 
 # Monthly lightweight cleanup and diagnostics:
 # Docker prune, log cleanup, disk usage report.
 
 on:
   schedule:
-    - cron: "40 3 7 * *"  # 7th of month, 03:40 UTC
+    - cron: '40 3 7 * *'   # jeden 7. des Monats 03:40 UTC
+
   workflow_dispatch:
     inputs:
       target:
-        description: "Target environment from inventory.yaml"
+        description: "GitHub environment / inventory target for manual runs"
         required: true
         type: environment
 
+permissions:
+  contents: read
+
 jobs:
-  janitor:
+  prepare:
     # Skip on the template repo itself; tenant forks run normally.
     if: github.repository != 'bigler-webapps/webapp-management-template'
     runs-on: ubuntu-latest
-    environment: ${{ inputs.target || 'production' }}
-    permissions:
-      contents: read
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
-      - name: Checkout webapp-ops-scripts
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - id: resolve
+        shell: bash
+        env:
+          # S20-pattern: route inputs.target through env, validate format before
+          # passing to Python. `type: environment` is a UI-only constraint that
+          # API dispatch can bypass.
+          INPUT_TARGET: ${{ inputs.target }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ -z "$INPUT_TARGET" ]; then
+              echo "❌ 'target' is required for manual janitor runs."
+              exit 1
+            fi
+            if ! printf '%s' "$INPUT_TARGET" | grep -qE '^[a-zA-Z0-9_-]+$'; then
+              echo "❌ Invalid 'target' input — must be an environment name (alphanumeric + dash/underscore)."
+              exit 1
+            fi
+            M="$(python3 .github/scripts/resolve_inventory_targets.py --target "$INPUT_TARGET" --require-role janitor)"
+          else
+            M="$(python3 .github/scripts/resolve_inventory_targets.py --role janitor)"
+          fi
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+
+  janitor:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    environment: ${{ matrix.github_environment }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: ⬇️ Checkout webapp-ops-scripts
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           repository: bigler-webapps/webapp-ops-scripts
           path: ops-scripts
 
-      - name: Run janitor
-        uses: bigler-webapps/workflow-templates/.github/actions/janitor@v2.0.3
+      - uses: bigler-webapps/workflow-templates/.github/actions/janitor@v2.0.3
         with:
-          target: ${{ inputs.target || 'production' }}
-          ssh_host: ${{ secrets.SSH_HOST }}
-          ssh_user: ${{ secrets.SSH_USER }}
-          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          target: ${{ matrix.target }}
+          # v2.0.0: Tailscale-SSH-only — no ssh_private_key.
+          ssh_host: ${{ matrix.target }}.tail990d7f.ts.net
+          ssh_user: deploy
+          ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts_oauth_secret: ${{ secrets.TS_OAUTH_SECRET }}
+          ops_scripts_path: ops-scripts

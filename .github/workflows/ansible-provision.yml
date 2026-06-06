@@ -82,18 +82,76 @@ jobs:
       - name: Install collection requirements
         run: ansible-galaxy collection install -r requirements.yml
 
-      - name: Write SSH key
+      # Fail fast with a clear message if the dedicated provisioning OAuth
+      # secrets are missing in this environment (restores the explicit
+      # emptiness guard the removed root-key step used to provide).
+      - name: Validate provision OAuth secrets
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY_ROOT }}
+          CID: ${{ secrets.TS_PROVISION_OAUTH_CLIENT_ID }}
+          CSEC: ${{ secrets.TS_PROVISION_OAUTH_SECRET }}
         run: |
           set -euo pipefail
-          if [ -z "${SSH_PRIVATE_KEY}" ]; then
-            echo "❌ Secret SSH_PRIVATE_KEY_ROOT not set in environment '${{ inputs.target }}'."
+          if [ -z "${CID}" ] || [ -z "${CSEC}" ]; then
+            echo "❌ TS_PROVISION_OAUTH_CLIENT_ID/SECRET not set in environment '${{ inputs.target }}'."
             exit 1
           fi
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_ansible
-          chmod 600 ~/.ssh/id_ansible
+          echo "✅ Provision OAuth secrets present."
+
+      # Runner joins the Tailnet so Ansible can resolve
+      # <host>.tail990d7f.ts.net MagicDNS names and reach servers via
+      # Tailscale SSH. OAuth credentials are per-environment secrets.
+      - name: Join Tailnet
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade  # v3.2.3
+        with:
+          # Dedicated provisioning OAuth client (tag:ci-provision only), isolated
+          # from the tag:ci-deploy client used by app deploys. The tailnet ACL
+          # maps tag:ci-provision -> tag:server-* as the `provision` user.
+          oauth-client-id: ${{ secrets.TS_PROVISION_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_PROVISION_OAUTH_SECRET }}
+          tags: tag:ci-provision
+          version: "1.98.3"
+          # Explicit valid DNS-label hostname: the runner's default hostname can
+          # be an invalid label, making `tailscale up` flaky and leaving peer
+          # connectivity unestablished (transient UNREACHABLE). run_id is numeric.
+          hostname: gh-ci-provision-${{ github.run_id }}
+
+      # Verify systemd-resolved routes .tail990d7f.ts.net through Tailscale's
+      # MagicDNS server before Ansible tries to connect. Exits non-zero if the
+      # domain is missing, which surfaces DNS misconfiguration early.
+      - name: Verify MagicDNS routing
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            if resolvectl domain | grep -q 'tail990d7f.ts.net'; then
+              echo "✅ MagicDNS domain routed via systemd-resolved"
+              exit 0
+            fi
+            echo "⏳ Waiting for MagicDNS routing ($i/5)..."
+            sleep 2
+          done
+          echo "❌ MagicDNS domain not found in resolvectl domain output after 10 s"
+          resolvectl domain || true
+          resolvectl dns   || true
+          exit 1
+
+      # The ephemeral runner's WireGuard peer connectivity can lag the MagicDNS
+      # routing check above by a few seconds. Wait until the target is reachable
+      # before handing off to Ansible.
+      - name: Wait for Tailnet peer connectivity
+        env:
+          LIMIT_TARGET: ${{ inputs.target }}
+        run: |
+          set -uo pipefail
+          HOST="${LIMIT_TARGET}.tail990d7f.ts.net"
+          for i in $(seq 1 15); do
+            if tailscale ping --c 1 --timeout 2s "$HOST" >/dev/null 2>&1; then
+              echo "✅ Tailnet peer reachable: $HOST"
+              exit 0
+            fi
+            echo "⏳ Waiting for tailnet peer connectivity to $HOST ($i/15)..."
+            sleep 2
+          done
+          echo "⚠️ $HOST not confirmed reachable after 30s — proceeding; Ansible will surface the real error."
 
       - name: Run Ansible playbook
         env:
@@ -105,9 +163,8 @@ jobs:
           LIMIT_TARGET: ${{ inputs.target }}
           # Workflow-input passthrough for one-shot ansible extra-vars
           # (e.g. `tailscale_force_up=true` after changing tailscale-up
-          # flags). Same env-var-quoting + regex validation pattern as
-          # LIMIT_TARGET — see S20 hardening notes in
-          # provision-server.yml and sync-ssh-access.yml.
+          # flags). Same env-var-quoting + regex validation (S20 hardening)
+          # as LIMIT_TARGET above.
           EXTRA_VARS: ${{ inputs.extra_vars }}
           # Tailscale auth-key consumed by the biglerconsult.infra.tailscale
           # role via `lookup('env', 'TAILSCALE_AUTH_KEY')` in group_vars.
@@ -119,6 +176,16 @@ jobs:
           # environments (e.g. main-prod) without intent; doing so would
           # auto-register that host into the same tailnet on the next run.
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          # Runner-host secrets — only populated in the `runners` GitHub
+          # Environment. For all other targets these evaluate to empty strings,
+          # which is the safe fallback: the runner play only runs when
+          # --limit includes the `runners` group, so empty values are never
+          # consumed against non-runner hosts.
+          TAILSCALE_MGMT_AUTH_KEY: ${{ secrets.TAILSCALE_MGMT_AUTH_KEY }}
+          GH_RUNNER_APP_ID: ${{ secrets.GH_RUNNER_APP_ID }}
+          GH_RUNNER_APP_INSTALLATION_ID: ${{ secrets.GH_RUNNER_APP_INSTALLATION_ID }}
+          GH_RUNNER_APP_PRIVATE_KEY: ${{ secrets.GH_RUNNER_APP_PRIVATE_KEY }}
+          GH_RUNNER_SHA256: ${{ secrets.GH_RUNNER_SHA256 }}
         run: |
           set -euo pipefail
           # Input was already strict-validated in the dedicated
@@ -129,8 +196,10 @@ jobs:
           if [ -n "${EXTRA_VARS}" ]; then
             EXTRA_VARS_ARG=( --extra-vars "$EXTRA_VARS" )
           fi
+          # No --private-key: the connection is Tailscale-SSH keyless as the
+          # `provision` user (ansible_user in host_vars), authorised by the
+          # tailnet ACL (tag:ci-provision -> tag:server-* as provision).
           ansible-playbook site.yml \
             --inventory inventory/hosts.yml \
             --limit "$LIMIT_TARGET" \
-            "${EXTRA_VARS_ARG[@]}" \
-            --private-key ~/.ssh/id_ansible
+            "${EXTRA_VARS_ARG[@]}"

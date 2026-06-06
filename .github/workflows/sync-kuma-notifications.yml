@@ -1,14 +1,13 @@
 name: Sync Uptime Kuma Notifications
 
 # Idempotently registers / updates the notification channels defined in
-# monitoring/notifications.yml against your Uptime Kuma server.
+# monitoring/notifications.yml against the Uptime Kuma server.
 #
 # Run this once after initial Kuma setup, or after editing the config.
 # It's safe to re-run — entries are matched by name.
 #
-# Prereqs: secrets KUMA_URL, KUMA_AUTOMATION_USER, KUMA_AUTOMATION_PASSWORD
-# (and any per-channel secrets you reference in notifications.yml, e.g.
-# DISCORD_WEBHOOK_URL).
+# NOTE: This workflow syncs notification channels (Discord webhooks, etc.) only.
+# App monitors are registered via kuma-sync.yml (see ONBOARDING.md B.10).
 
 on:
   workflow_dispatch:
@@ -27,6 +26,9 @@ concurrency:
   group: kuma-notifications-${{ inputs.target }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   sync:
     # Skip on the template repo itself; tenant forks run normally.
@@ -36,15 +38,19 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - uses: bigler-webapps/workflow-templates/.github/actions/sync-kuma-notifications@v2.0.3
         with:
           config_path: monitoring/notifications.yml
-          ssh_host: ${{ secrets.SSH_HOST }}
-          ssh_user: ${{ secrets.SSH_USER }}
-          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # Kuma accessed via Tailnet-Serve on port 8443 on the monitoring host.
+          kuma_url: https://monitoring.tail990d7f.ts.net:8443
+          # v2.0.0: Tailscale-SSH-only — no ssh_private_key.
+          ssh_host: ${{ inputs.target }}.tail990d7f.ts.net
+          ssh_user: deploy
           kuma_user: ${{ secrets.KUMA_AUTOMATION_USER }}
           kuma_password: ${{ secrets.KUMA_AUTOMATION_PASSWORD }}
           discord_webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}
           prune: ${{ inputs.prune && 'true' || 'false' }}
+          ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts_oauth_secret: ${{ secrets.TS_OAUTH_SECRET }}

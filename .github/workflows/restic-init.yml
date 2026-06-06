@@ -33,7 +33,7 @@ jobs:
     steps:
       # Pinned to the workflow-templates commit that introduced the composite.
       # Bump deliberately after re-review.
-      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restic-init@ffa5011e37353fdc1fe302e0f25da4ecfa0d4a5e
+      - uses: bigler-webapps/workflow-templates/.github/actions/restic-init@ffa5011e37353fdc1fe302e0f25da4ecfa0d4a5e
         with:
           target: ${{ inputs.target }}
           restic_repo_b2: ${{ secrets.RESTIC_REPO_B2 }}

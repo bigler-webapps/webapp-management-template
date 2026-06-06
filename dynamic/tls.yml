@@ -1,0 +1,11 @@
+# Traefik TLS options
+#
+# sniStrict: true — rejects TLS handshakes that do not include an SNI
+# extension matching a configured certificate. Prevents fallback to a
+# default (possibly wrong) cert and hardens against cert-mismatch probing.
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: true

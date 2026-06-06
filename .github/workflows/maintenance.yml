@@ -1,46 +1,84 @@
-name: Maintenance
+name: Maintenance - Reboot If Needed
 
 # Weekly OS maintenance: apt updates, reboot if needed, container health check.
 
 on:
   schedule:
-    - cron: "30 3 * * 0"  # Sunday 03:30 UTC
+    - cron: "30 3 * * 0" # Sunday 03:30 UTC
+
   workflow_dispatch:
     inputs:
       target:
-        description: "Target environment from inventory.yaml"
+        description: "GitHub environment / inventory target for manual runs"
         required: true
         type: environment
       apply_updates:
         description: "Install apt updates before reboot decision"
         required: false
-        type: boolean
         default: true
+        type: boolean
       force_reboot:
         description: "Force reboot even if /var/run/reboot-required is absent"
         required: false
-        type: boolean
         default: false
+        type: boolean
+
+concurrency:
+  group: maintenance-reboot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
-  maintenance:
+  prepare:
     # Skip on the template repo itself; tenant forks run normally.
     if: github.repository != 'bigler-webapps/webapp-management-template'
     runs-on: ubuntu-latest
-    environment: ${{ inputs.target || 'production' }}
-    permissions:
-      contents: read
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
-      - name: Run maintenance
-        uses: bigler-webapps/workflow-templates/.github/actions/maintenance@v2.0.3
+      - id: resolve
+        shell: bash
+        env:
+          # S20-pattern: route inputs.target through env, validate format before
+          # passing to Python. `type: environment` is a UI-only constraint that
+          # API dispatch can bypass.
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_TARGET" ]; then
+            if ! printf '%s' "$INPUT_TARGET" | grep -qE '^[a-zA-Z0-9_-]+$'; then
+              echo "❌ Invalid 'target' input — must be an environment name (alphanumeric + dash/underscore)."
+              exit 1
+            fi
+            M="$(python3 .github/scripts/resolve_inventory_targets.py --target "$INPUT_TARGET" --require-role maintenance)"
+          else
+            M="$(python3 .github/scripts/resolve_inventory_targets.py --role maintenance)"
+          fi
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+
+  reboot-if-needed:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    environment: ${{ matrix.github_environment }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: bigler-webapps/workflow-templates/.github/actions/maintenance@v2.0.3
         with:
-          target: ${{ inputs.target || 'production' }}
-          ssh_host: ${{ secrets.SSH_HOST }}
-          ssh_user: ${{ secrets.SSH_USER }}
-          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
-          apply_updates: ${{ inputs.apply_updates || true }}
-          force_reboot: ${{ inputs.force_reboot || false }}
-          # TODO: tenant-specific - adapt to your container names
-          expected_container_tokens_json: '["traefik"]'
+          target: ${{ matrix.target }}
+          # v2.0.0: Tailscale-SSH-only — no ssh_private_key.
+          ssh_host: ${{ matrix.target }}.tail990d7f.ts.net
+          ssh_user: deploy
+          ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts_oauth_secret: ${{ secrets.TS_OAUTH_SECRET }}
+          apply_updates: ${{ (github.event_name != 'workflow_dispatch' || inputs.apply_updates == true) && 'true' || 'false' }}
+          force_reboot: ${{ github.event_name == 'workflow_dispatch' && inputs.force_reboot == true && 'true' || 'false' }}
+          expected_container_tokens_json: ${{ toJson(matrix.expected_container_tokens) }}

@@ -58,6 +58,8 @@ def main() -> None:
     parser.add_argument("--target", help="Single target to resolve.")
     parser.add_argument("--role", help="Resolve all targets carrying this role.")
     parser.add_argument("--require-role", help="Require that the selected target(s) contain this role.")
+    parser.add_argument("--allow-empty", action="store_true", help="Allow empty result (emit empty include list instead of failing).")
+    parser.add_argument("--filter-succeeded-file", help="Path to a file listing succeeded target names (one per line); filter the matrix to these.")
     args = parser.parse_args()
 
     if not args.target and not args.role:
@@ -80,7 +82,7 @@ def main() -> None:
             for target in normalized_targets.values()
             if args.role in target.get("roles", [])
         ]
-        if not selected:
+        if not selected and not args.allow_empty:
             fail(f"No targets found for role '{args.role}'")
 
     if args.require_role:
@@ -94,6 +96,12 @@ def main() -> None:
                 f"Target(s) missing required role '{args.require_role}': "
                 + ", ".join(missing_role)
             )
+
+    if args.filter_succeeded_file:
+        filter_path = Path(args.filter_succeeded_file)
+        if filter_path.exists():
+            succeeded = {line.strip() for line in filter_path.read_text().splitlines() if line.strip()}
+            selected = [t for t in selected if t["target"] in succeeded]
 
     print(json.dumps({"include": selected}, separators=(",", ":")))
 

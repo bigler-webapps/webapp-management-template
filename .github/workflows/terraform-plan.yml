@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
-      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/terraform-plan@v2.0.3
+      - uses: bigler-webapps/workflow-templates/.github/actions/terraform-plan@v2.0.3
         with:
           tf_cloud_token: ${{ secrets.TF_CLOUD_TOKEN }}
           cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
