@@ -25,10 +25,11 @@ config:
   inventory_path: "inventory/inventory.yaml"
 
 secrets:
-  SSH_HOST: {}
-  SSH_PRIVATE_KEY: {}
-  SSH_PRIVATE_KEY_ROOT:
-    exclude_from_env: true        # only used at bootstrap, never in runtime .env
+  # Deploy/provisioning auth is Tailscale-SSH keyless (Tailscale OAuth, no SSH keys).
+  TS_OAUTH_CLIENT_ID:
+    exclude_from_env: true        # CI-only, never in runtime .env
+  TS_OAUTH_SECRET:
+    exclude_from_env: true
   RESTIC_PASSWORD: {}
   # ...
 ```
@@ -47,15 +48,12 @@ Optional fields per key:
 ```yaml
 targets:
   production:
-    SSH_HOST: "203.0.113.10"
-    SSH_USER: "deploy"
-    SSH_PRIVATE_KEY: |
-      -----BEGIN OPENSSH PRIVATE KEY-----
-      ...
+    TS_OAUTH_CLIENT_ID: "tskey-client-..."
+    TS_OAUTH_SECRET: "tskey-secret-..."
     RESTIC_PASSWORD: "your-strong-password"
     # ...
   staging:
-    SSH_HOST: "203.0.113.11"
+    TS_OAUTH_CLIENT_ID: "tskey-client-..."
     # ...
 ```
 
@@ -98,14 +96,17 @@ sync-secrets --server
 
 ## Required secrets per environment
 
-### Server access
+### Server access (Tailscale-SSH keyless)
 
-| Key | Description | Format |
-|---|---|---|
-| `SSH_HOST` | Public IP or hostname | `203.0.113.10` |
-| `SSH_USER` | Deploy user | `deploy` |
-| `SSH_PRIVATE_KEY` | OpenSSH private key for `SSH_USER` | PEM (multi-line) |
-| `SSH_PRIVATE_KEY_ROOT` | Root key for bootstrap only | PEM (multi-line) |
+Deploy and provisioning connect over the Tailnet and authenticate via Tailscale
+OAuth — there is **no SSH-key path** (retired in `deploy-app v1.11.0`). The deploy
+host is derived from `project.yaml` (`environments[env].server` + the tailnet
+suffix), not stored as a secret.
+
+| Key | Description |
+|---|---|
+| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID for the ephemeral CI node (`exclude_from_env`) |
+| `TS_OAUTH_SECRET` | Tailscale OAuth client secret (`exclude_from_env`) |
 
 ### Backup (Backblaze B2)
 
@@ -154,8 +155,7 @@ Apps live in their own repos with their own secrets schemas.
 
 | Secret class | Rotation cadence | Trigger events |
 |---|---|---|
-| `SSH_PRIVATE_KEY` | 12 months | Personnel change, compromise |
-| `SSH_PRIVATE_KEY_ROOT` | 12 months | Same |
+| `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` | 12 months | Personnel change, compromise |
 | B2 keys | 12 months | Same |
 | `RESTIC_PASSWORD` | **NEVER** | Loss = backups unrecoverable |
 | `TRAEFIK_DASHBOARD_AUTH` | 6 months | Compromise |
@@ -202,3 +202,8 @@ If you outgrow the values-file approach:
 5. Eventually delete `secrets.values.yaml`
 
 The schema in `secrets.yaml` stays the same — only the value source changes.
+
+Once on the vault, see **[SECRETS_STRUCTURE.md](SECRETS_STRUCTURE.md)** for the
+secret-vs-config split (what belongs in `project.yaml app_env` vs the vault), the
+Proton namespacing (`<app>/…` vs shared `webapp-management/…`), and a full worked
+example.
