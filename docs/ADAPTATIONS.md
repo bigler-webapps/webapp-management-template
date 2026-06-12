@@ -47,10 +47,10 @@ deploy.
 
 ### 5. GitHub Environment Secrets
 
-See [SECRETS.md](SECRETS.md) for the full list. At minimum:
-- [ ] SSH access (4 secrets)
-- [ ] Backup (4 secrets)
-- [ ] Traefik (4 secrets)
+See [SECRETS_STRUCTURE.md](SECRETS_STRUCTURE.md) §5 for the full inventory. At minimum:
+- [ ] Tailscale OAuth (`TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET`) + `CLOUDFLARE_TUNNEL_TOKEN`
+- [ ] Backup (`RESTIC_REPO_B2`, `RESTIC_PASSWORD`, `B2_KEY_ID`, `B2_APP_KEY`)
+- [ ] Traefik (`TRAEFIK_DASHBOARD_AUTH`, `DOMAIN_TRAEFIK`, `DOMAIN_KUMA`)
 
 ### 6. DNS configuration
 

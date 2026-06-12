@@ -1,13 +1,14 @@
-# Secrets & Config — Structure (vault model)
+# Secrets & Config
 
-Companion to [SECRETS.md](SECRETS.md). `SECRETS.md` covers the **file formats**,
-the baseline `secrets.values.yaml` flow, and the required-secrets tables. **This
-document** covers the question those don't: **what belongs where** once you run on
-a Proton vault — i.e. the secret-vs-config split, the Proton namespacing, and a
-full worked example.
+The single reference for how secrets and config are structured in this fleet. The
+deploy reads secrets from a **Proton Pass vault** via `sync-secrets`
+(`--secret-source proton`); non-secret config is plain `project.yaml`. This doc
+covers the secret-vs-config rule, the two-tier layout, the `secrets.yaml` field
+reference, the infra-tier (`webapp-management`) secret inventory, and a full app
+example.
 
-Read this once you've done the "Migration to a vault later" step in `SECRETS.md`
-and use `--secret-source proton`.
+> **Local dev without a vault:** every secret may carry a `dev_default:` fallback,
+> so running the app locally does not require `sync-secrets` or vault access.
 
 ---
 
@@ -40,12 +41,12 @@ they add churn. Put them in `project.yaml app_env` as plaintext.
 
 **Tier A — `webapp-management` (infra/platform):** server-level and shared secrets.
 - `inventory/inventory.yaml` — the server targets (main-prod, staging, monitoring …).
-- `secrets.yaml` — server/shared secrets.
-- Proton namespace: `webapp-management/<category>/<field>`.
+- `secrets.yaml` — server/shared secrets (full inventory in §5).
+- Proton namespace: `<vault>/<category>/<field>`.
 
 **Tier B — app repos (per app):**
-- `project.yaml` — **`app_env:`** (non-secret config) + `environments` (servers/domains/volumes) + `config.target_repo`.
-- `secrets.yaml` — the app's **real** secrets (may reference shared `webapp-management/...` items).
+- `project.yaml` — **`app_env:`** (non-secret config) + `environments` + `config.target_repo`.
+- `secrets.yaml` — the app's **real** secrets (may reference shared `webapp-management` items).
 - Proton namespace: `<app>/<category>/<field>`.
 
 ---
@@ -67,28 +68,34 @@ secrets.yaml + Proton ─┘    (on the server)
 
 ---
 
-## 3. `secrets.yaml` field reference (vault model)
+## 3. `secrets.yaml` field reference
 
 ```yaml
 config:
-  target_repo: "<org>/<app-repo>"
-  use_project_yaml: true
+  default_target: production
+  target_repo: "<org>/<repo>"
+  inventory_path: "inventory/inventory.yaml"   # infra tier only
 
 secrets:
   KEY_NAME:
-    source: "proton://<item>/<field>"        # fixed vault path
-    # source_template: "proton://webapp-management/server-{target}/..."  # per-server ({target})
+    source: "proton://<vault>/<item>/<field>"          # fixed vault path
+    # source_template: "proton://<vault>/server-{target}/..."  # per-server ({target}, see §6)
+    # target_scope: repo        # push to repo-level GitHub secret, not per-environment (see §6)
+    # exclude_from_env: true    # sync to GitHub but never render into the .env (CI/infra only)
     # dev_default: "..."        # local fallback without the vault
-    # exclude_from_env: true    # sync to GitHub but never render into the app .env (CI/infra only)
 ```
 
-- **`source:`** — fixed `proton://<item>/<field>`.
-- **`source_template:`** — with `{target}` placeholder for **per-server** secrets (infra tier; resolved by `--secret-target <target>`).
-- **`exclude_from_env: true`** — for infra/CI-only secrets (Tailscale, Kuma): synced to GitHub, never written into the app `.env`.
+- **`source:`** — fixed `proton://<vault>/<item>/<field>`.
+- **`source_template:`** — with `{target}` placeholder for **per-server** secrets (§6).
+- **`target_scope: repo`** — push to a **repo-level** GitHub secret instead of a
+  per-environment one. For workflows that have no `environment:` (e.g. `kuma-sync`,
+  cross-server restore). Default is per-environment.
+- **`exclude_from_env: true`** — infra/CI-only: synced to GitHub, never written into the app `.env`.
+- **`dev_default:`** — local fallback when not running against the vault.
 
 ---
 
-## 4. Full worked example — `reimbursements` (a live, simple app)
+## 4. Full worked example — `reimbursements` (app tier)
 
 ### `project.yaml` — everything non-secret
 
@@ -102,13 +109,11 @@ root_module: "backend"
 environments:
   production:
     server: main-prod          # resolves {target}/{server} in secrets.yaml
-    domains:
-      - "reimbursements.<domain>"
+    domains: ["reimbursements.<domain>"]
     use_traefik: true
   staging:
     server: staging
-    domains:
-      - "staging-reimbursements.<domain>"
+    domains: ["staging-reimbursements.<domain>"]
     use_traefik: true
   local:
     domains: ["localhost", "127.0.0.1"]
@@ -174,11 +179,6 @@ secrets:
     exclude_from_env: true
 ```
 
-### Three cleanly separated groups in `secrets.yaml`
-1. **App-owned** (`proton://reimbursements/...`): django, database, mail, api-keys.
-2. **Shared** (`proton://webapp-management/...`): social-login, shared-api-keys — **once** in the vault, referenced by every app.
-3. **CI/infra** (`exclude_from_env: true`): Tailscale OAuth, Kuma — synced but never in the app `.env`.
-
 ### Resulting Proton vault layout
 
 ```
@@ -197,33 +197,116 @@ webapp-management/                 ← shared/central (for ALL apps)
   └─ monitoring/kuma_automation_*
 ```
 
-### Resulting `.env` on the server (what generate-env builds)
+---
 
-```ini
-# from project.yaml app_env (Git, plaintext)
-DB_NAME=reimbursement-db
-DB_USER=reimbursement-db-user
-DB_HOST=db
-EMAIL_PROVIDER=resend
-DEFAULT_FROM_EMAIL=noreply@<domain>
-GOOGLE_CLIENT_ID=5852...
-MICROSOFT_CLIENT_ID=f107a674-...
-MICROSOFT_TENANT_ID=common
-# from secrets.yaml → Proton → GitHub (minus exclude_from_env)
-DJANGO_SECRET_KEY=***
-DB_PASSWORD=***
-EMAIL_PASSWORD=***
-RESEND_API_KEY=***
-OPENAI_API_KEY=***
-GOOGLE_SECRET=***
-MICROSOFT_SECRET=***
-VITE_APP_MUI_LICENSE_KEY=***
-# NOT in the .env: TS_OAUTH_*, KUMA_* (exclude_from_env)
-```
+## 5. Infra tier — `webapp-management` secret inventory
+
+These live in `webapp-management/secrets.yaml`, not in app repos. Grouped by category
+as the template ships them. Paths shown relative to your vault (`proton://<vault>/…`).
+
+**Per-server connectivity** — `source_template` with `{target}`, `exclude_from_env`:
+| Key | Purpose |
+|---|---|
+| `TAILSCALE_AUTH_KEY` | Tailnet join key for the server node |
+| `CLOUDFLARE_TUNNEL_TOKEN` | cloudflared tunnel token (**per server** — never copy across servers) |
+
+**Backup (Backblaze B2)** — per-server:
+| Key | Purpose |
+|---|---|
+| `RESTIC_REPO_B2` | restic repo URL |
+| `RESTIC_PASSWORD` | **NEVER rotate** — loss = backups unrecoverable; back up offline |
+| `B2_KEY_ID` / `B2_APP_KEY` | B2 application key |
+
+**Cross-server restore:**
+| Key | Purpose |
+|---|---|
+| `CROSS_SERVER_TRANSPORT_KEY` | repo-scoped (`target_scope: repo`), `exclude_from_env` |
+
+**Cloudflare API:**
+| Key | Purpose |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | DNS / tunnel management |
+| `CLOUDFLARE_ACCESS_API_TOKEN` | CF Access (Zero Trust) |
+| `CLOUDFLARE_ACCOUNT_ID` | account id |
+
+**CI tokens (Tailscale OAuth):**
+| Key | Purpose |
+|---|---|
+| `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` | ephemeral deploy node |
+| `TS_PROVISION_OAUTH_CLIENT_ID` / `TS_PROVISION_OAUTH_SECRET` | dedicated provisioning node |
+| `TAILSCALE_MGMT_AUTH_KEY` | management Tailnet key |
+
+**Traefik:**
+| Key | Purpose |
+|---|---|
+| `TRAEFIK_DASHBOARD_AUTH` | htpasswd string — **`$$`-escape** the bcrypt `$` signs (else docker compose treats them as vars) |
+| `DOMAIN_TRAEFIK` / `DOMAIN_KUMA` | per-server dashboard / status hostnames |
+
+> `ACME_EMAIL` is **not used** — TLS is via Cloudflare Origin Certificates, not Let's Encrypt.
+
+**Cloudflare Origin Certificates** — one pair per domain, `exclude_from_env`:
+| Key | Purpose |
+|---|---|
+| `ORIGIN_CERT_<DOMAIN_SLUG>` / `ORIGIN_KEY_<DOMAIN_SLUG>` | per-domain cert+key, written to `certs/` by the deploy role |
+
+**Monitoring / Uptime Kuma** — `exclude_from_env`:
+| Key | Purpose |
+|---|---|
+| `KUMA_URL`, `KUMA_AUTOMATION_USER`, `KUMA_AUTOMATION_PASSWORD` | Kuma automation user (no 2FA) |
+| `DISCORD_WEBHOOK_URL` | notification channel |
+
+**Kuma sync (repo-scoped GitHub App)** — `target_scope: repo`, `exclude_from_env`:
+| Key | Purpose |
+|---|---|
+| `KUMA_SYNC_APP_ID` / `KUMA_SYNC_APP_PRIVATE_KEY` | GitHub App for the central `kuma-sync` workflow |
+
+**Self-hosted GitHub runner (GitHub App)** — sync with `--secret-target runners --github-environment runners`:
+| Key | Purpose |
+|---|---|
+| `GH_RUNNER_APP_ID`, `GH_RUNNER_APP_INSTALLATION_ID`, `GH_RUNNER_APP_PRIVATE_KEY`, `GH_RUNNER_SHA256` | runner registration |
+
+**Terraform Cloud:**
+| Key | Purpose |
+|---|---|
+| `TF_CLOUD_TOKEN` | TFC API token |
 
 ---
 
-## 5. Migration checklist (per app + webapp-management)
+## 6. Per-server secrets: the `{target}` pattern
+
+Per-server secrets use `source_template` with a `{target}` placeholder, so **one
+declaration covers every server** — no per-server duplication:
+
+```yaml
+RESTIC_PASSWORD:
+  source_template: "proton://<vault>/server-{target}/restic_password"
+```
+
+`{target}` is resolved from:
+- **Infra tier:** the `--secret-target <target>` flag, e.g.
+  `sync-secrets --server --secret-target staging` → `proton://<vault>/server-staging/restic_password`.
+- **App tier:** `environments[env].server` in `project.yaml` (e.g. `server: main-prod`).
+
+A plain `source:` (no `{target}`) is a single **shared** item used by all targets.
+
+`target_scope: repo` pushes to a **repo-level** GitHub secret rather than a
+per-environment one — needed for workflows that run without an `environment:`
+(e.g. `kuma-sync`, cross-server restore).
+
+---
+
+## 7. Rotation & lifecycle
+
+| Secret class | Cadence | Trigger |
+|---|---|---|
+| `RESTIC_PASSWORD` | **NEVER** | Loss = backups unrecoverable |
+| `TS_OAUTH_*` / `TS_PROVISION_*` / B2 keys / `TF_CLOUD_TOKEN` | 12 months | Personnel change, compromise |
+| `TRAEFIK_DASHBOARD_AUTH` | 6 months | Compromise |
+| App `*_SECRET` / `*_PASSWORD` | per provider | per provider |
+
+---
+
+## 8. Migration checklist (per app + webapp-management)
 
 1. Walk every `secrets.yaml` entry: **secret or config?** (table in §0).
 2. Move config entries into `project.yaml app_env` (plaintext); **remove** them from
@@ -231,12 +314,21 @@ VITE_APP_MUI_LICENSE_KEY=***
 3. Trim `secrets.yaml` to real secrets; point shared ones (OAuth, MUI, CI) at
    `webapp-management/...`.
 4. Delete **`SSH_*`** entries (retired — Tailscale-SSH keyless).
-5. Mirror the Proton vault: app secrets under `<app>/<category>/<field>`, shared
+5. Mirror the Proton vault: app secrets under `<app>/<category>/<field>`, shared/infra
    under `webapp-management/<category>/<field>`; the shared OAuth app under
    `webapp-management/social-login/`.
 6. Re-run `sync-secrets` → **no more `[CLI ERROR]`** (every declared item exists).
 
-## 6. Verification
+## 9. Removing a secret
+
+`sync-secrets` only **adds/updates** — it does not delete stale GitHub secrets. Remove
+them manually, then drop the key from `secrets.yaml`:
+
+```
+gh secret delete OLD_KEY --env <environment>
+```
+
+## 10. Verification
 - `sync-secrets` run: every line `[OK via proton]`, no `[CLI ERROR]`.
 - Deploy → `generate-env`: no `[WARN] Missing value for …` for app-relevant keys.
 - App social login (Google/Microsoft) works + mail sends → secrets rendered correctly.

@@ -525,7 +525,7 @@ Commit just the rename if you want it tracked, or keep it local-only (it is alre
    - Repo → Settings → Environments → `<target>` → Environment secrets
    - All declared keys should appear (values are masked)
 
-**Full reference** (which keys are required, formats, rotation) is in [SECRETS.md](SECRETS.md).
+**Full reference** (secret-vs-config rule, per-secret inventory, rotation) is in [SECRETS_STRUCTURE.md](SECRETS_STRUCTURE.md).
 
 ### A.4 Create GitHub Environments
 
@@ -1417,7 +1417,7 @@ completes, the CI workflow will connect via Tailscale-SSH as `provision`.
 |---|---|
 | `bigler-webapps/webapp-management/SECURITY_FINDINGS.md` | Central finding tracker (S1--S181+) |
 | `bigler-webapps/webapp-management/ARCHITECTURE.md` | Platform topology, deploy flow, Tailscale, Cloudflare |
-| `bigler-webapps/webapp-management-template/docs/SECRETS.md` | Per-secret schema, rotation cadence |
+| `bigler-webapps/webapp-management-template/docs/SECRETS_STRUCTURE.md` | Secret-vs-config rule, per-secret inventory, rotation |
 | `bigler-webapps/webapp-management-template/docs/BREAK_GLASS.md` | Recovery runbook -- especially Scenario 2 for re-opening tcp/22 after B.8.2 lockdown |
 | `bigler-webapps/webapp-management/RUNNER_HOST_BOOTSTRAP.md` | Self-hosted runner host bootstrap + authoritative `runs-on: netcup` roll-out YAML (Section B.7.0) |
 | `bigler-webapps/django-core-micha/README.md` | Auth-library API |

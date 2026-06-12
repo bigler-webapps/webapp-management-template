@@ -67,7 +67,7 @@ secrets.yaml              Secret-Schema (committed; Werte kommen aus Proton Pass
 docs/
   ├─ ONBOARDING.md           Vollständige Anleitung (Part A + B)
   ├─ MIGRATE_LEGACY_APP.md   Legacy-Migration
-  ├─ SECRETS.md              Secret-Schema-Referenz
+  ├─ SECRETS_STRUCTURE.md    Secrets & Config — Referenz
   ├─ BREAK_GLASS.md          Notfall-Runbook
   └─ DASHBOARD.md            Traefik-Dashboard-Konfiguration
 ```
@@ -99,7 +99,7 @@ und schreibt in GitHub Environment Secrets. Kein Zwischenschritt, kein lokales F
 | Dok | Zweck |
 |---|---|
 | [`docs/ONBOARDING.md`](docs/ONBOARDING.md) | Vollständige Anleitung von 0 |
-| [`docs/SECRETS.md`](docs/SECRETS.md) | Alle Secret-Keys, Formate, Rotation |
+| [`docs/SECRETS_STRUCTURE.md`](docs/SECRETS_STRUCTURE.md) | Secret-vs-Config, Inventar, Rotation |
 | [`docs/BREAK_GLASS.md`](docs/BREAK_GLASS.md) | Notfall-Recovery |
 | [`docs/MIGRATE_LEGACY_APP.md`](docs/MIGRATE_LEGACY_APP.md) | Legacy-App migrieren |
 | [`bigler-webapps/workflow-templates`](https://github.com/bigler-webapps/workflow-templates) | Shared Composite Actions |
