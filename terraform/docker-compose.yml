@@ -1,6 +1,6 @@
 services:
   tf:
-    image: hashicorp/terraform:1.9
+    image: hashicorp/terraform:1.14
     env_file:
       - ../.env.local
     volumes:
