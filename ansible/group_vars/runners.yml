@@ -26,11 +26,16 @@ tailscale_advertise_tags: []
 tailscale_ssh: false
 
 # ── Tailscale mgmt instance ───────────────────────────────────────────────────
-# Auth-key for the mgmt tailscaled instance (permanent, tag:ci-runner-host).
+# Auth-key for the mgmt tailscaled instance (permanent runner-host identity).
 # Populated from the `runners` GitHub Environment Secret TAILSCALE_MGMT_AUTH_KEY
 # (exposed as env var TAILSCALE_MGMT_AUTH_KEY by ansible-provision).
 tailscale_mgmt_authkey: "{{ lookup('env', 'TAILSCALE_MGMT_AUTH_KEY') }}"
-tailscale_mgmt_tag: "tag:YOUR-RUNNER-TAG"
+# The permanent mgmt daemon may need both the runner-host and deploy-egress tags:
+# it owns the host's tailnet egress route, so outbound deploy SSH must satisfy
+# the tailnet ACL even while a job's default daemon has an ephemeral identity.
+# Pre-authorise the auth key for both tags; after changing tags, re-provision
+# with `-e tailscale_mgmt_force_up=true`.
+tailscale_mgmt_tag: "tag:YOUR-DEPLOY-TAG,tag:YOUR-RUNNER-TAG"
 
 # ── Phased UFW rollout ────────────────────────────────────────────────────────
 # runner_ufw_tailnet_only controls whether public port 22 remains open.
