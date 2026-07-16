@@ -47,7 +47,7 @@
     - biglerconsult.infra.fail2ban
     - biglerconsult.infra.tailscale
     - srv_dirs
-    - biglerconsult.infra.swap
+    - swap
     - biglerconsult.infra.promtail
 
   post_tasks:

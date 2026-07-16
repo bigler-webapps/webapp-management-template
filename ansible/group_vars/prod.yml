@@ -18,13 +18,16 @@ tailscale_advertise_tags:
 
 # Override the role default (port 22 only). prod hosts run the web stack
 # (Traefik) and need 80/443 reachable for direct-A app subdomains and any
-# legacy non-Tunnel paths. Tightening to tailscale0-only is a follow-up
-# after the per-tenant ≥7-day Tailscale-SSH soak — see
+# legacy non-Tunnel paths. SSH itself is tailnet-only (matches stage.yml /
+# monitoring.yml) after the per-tenant ≥7-day Tailscale-SSH soak — see
 # bigler-webapps/webapp-template/TENANT_ONBOARDING_GUIDE.md Section 10.
 ufw_allow_in:
-  - port: "22"
+  # Public SSH closed — Tailscale CGNAT (100.64.0.0/10) is IPv4-only; use
+  # your cloud provider's console for OOB/break-glass access if needed.
+  - from: "100.64.0.0/10"
+    port: "22"
     proto: tcp
-    comment: ssh
+    comment: "ssh — tailnet only"
   - port: "80"
     proto: tcp
     comment: http
