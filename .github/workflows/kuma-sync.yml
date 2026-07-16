@@ -47,13 +47,12 @@ jobs:
           private-key: ${{ secrets.KUMA_SYNC_APP_PRIVATE_KEY }}
           owner: YOUR_GITHUB_ORG
 
-      - name: Join Tailnet
-        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade  # v3.2.3
+      - name: Ensure tailnet (probe-guard; cache + retry on cold join)
+        uses: bigler-webapps/workflow-templates/.github/actions/tailnet-connect@v2.5.2
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci-deploy
-          version: "1.98.3"
+          ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts_oauth_secret: ${{ secrets.TS_OAUTH_SECRET }}
+          ts_tag: tag:ci-deploy
 
       - name: Pre-flight Kuma reachability
         run: |
