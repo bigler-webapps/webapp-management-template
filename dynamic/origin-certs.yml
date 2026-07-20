@@ -1,0 +1,18 @@
+# Cloudflare Origin Certificates for Traefik
+#
+# Cert + key come from the deploy-traefik composite action, which writes them
+# from GitHub Environment Secrets (synced from your secret store) to ./certs/
+# before rsync. Files are gitignored.
+#
+# Add one certificates entry per zone (domain) you proxy through Cloudflare.
+# A multi-SAN cert covering <your-domain.example.com> + *.<your-domain.example.com>
+# can cover every subdomain of one zone with a single entry.
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/your-domain-example-com.crt
+      keyFile: /etc/traefik/certs/your-domain-example-com.key
+      stores:
+        - default
+
+    # Add further entries here, one per additional zone.
