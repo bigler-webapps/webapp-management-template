@@ -19,7 +19,8 @@ How to swap a server (replace staging/prod box, or add a node like `monitoring`)
 - Repo: `webapp-management` (remote `bigler-webapps/webapp-management`). Infra repo →
   `main` + `develop` only. Terraform Cloud workspace `bigler-webapps/webapp-management`,
   **execution mode Local, merge to `main` = auto-apply.**
-- Targets + their layers live in `inventory/inventory.yaml` (deploy-traefik),
+- Targets + their layers live in `project.yaml` `infra.servers` (deploy-traefik,
+  read by `resolve_inventory_targets.py`; retired `inventory/inventory.yaml`),
   `ansible/inventory/hosts.yml` (provisioning), `terraform/*.tf` (DNS + tunnels),
   and Proton Pass `server-{target}/*` (per-server secrets).
 - A server is **never** just compute. Every box has: compute, a public DNS
@@ -53,7 +54,7 @@ How to swap a server (replace staging/prod box, or add a node like `monitoring`)
   "work" even while public DNS still points at the old box. **This is the trap:
   green deploys ≠ public traffic served from the new box.**
 - Web stack (traefik/cloudflared/kuma) deploys via `deploy-traefik` to hosts with
-  `role: traefik` in `inventory/inventory.yaml`; `compose_profile` selects which
+  `role: traefik` in `project.yaml` `infra.servers`; `compose_profile` selects which
   `docker-compose.yml` services start (profiles are additive per host).
 - `infra_container_tokens` must list exactly the containers that the chosen
   `compose_profile` starts (validation step). Don't list profile-gated services
