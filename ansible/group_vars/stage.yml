@@ -38,3 +38,7 @@ ufw_allow_in:
     port: "8090"
     proto: tcp
     comment: "claude-relay webhook — tailnet only (Kuma -> relay)"
+  - from: "100.64.0.0/10"
+    port: "9110"
+    proto: tcp
+    comment: "server-health responder — tailnet only, polled by the monitor"

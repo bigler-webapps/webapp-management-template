@@ -49,6 +49,13 @@
     - srv_dirs
     - biglerconsult.infra.swap
     - biglerconsult.infra.promtail
+    # Disk/mem/swap threshold probe + responder, polled by an ordinary HTTP
+    # monitor over the tailnet (no push monitor, no token/secret). This play
+    # (all:!runners) already covers the `monitoring` host, so it is NOT
+    # repeated in the monitoring play below — every other role here applies
+    # once per host; it IS repeated in the separate runners play below,
+    # since runners are excluded from this play's `hosts:`.
+    - server_health
 
   post_tasks:
     # Append committed root pubkeys. Uses exclusive=false so the bootstrap
@@ -92,6 +99,10 @@
 
   roles:
     - biglerconsult.infra.loki
+    # server_health is NOT added here — the top play (hosts: all:!runners)
+    # already includes the `monitoring` group, so adding it here too would
+    # apply it twice on this host. Same single-application pattern as
+    # promtail/swap above.
 
   tasks:
     # Expose Kuma (binds 127.0.0.1:3001) on the tailnet at :8443 so CI
@@ -168,6 +179,95 @@
     # unit. The mgmt instance is established ONCE by the operator bootstrap
     # (runner-bootstrap.yml, via public-IP root) and must not be touched here.
     - biglerconsult.infra.github_runner
+    # See the note in the top play's role list.
+    - server_health
+
+  tasks:
+    # OS/apt maintenance: a shared runner typically has NO apt-update/reboot
+    # coverage of its own — a generic "run maintenance over SSH from CI"
+    # workflow targeting app servers would be circular if pointed at the
+    # runner that executes it. A LOCAL systemd timer mirrors that same
+    # logic (update, upgrade, autoremove, autoclean, reboot only if
+    # /var/run/reboot-required exists), self-contained on the runner host.
+    #
+    # If this is a SHARED runner (limited JIT slots), a reboot mid-job kills
+    # any running job(s) and stalls the queue — Docker itself being
+    # upgraded/restarted by apt can have the same effect even without a
+    # reboot. Gate the ENTIRE run on runner idleness (no running containers
+    # = no active CI job, assuming this host's only workload is executing
+    # CI jobs) and skip cleanly if busy — the weekly cadence retries next
+    # week, and reboot-required (if any) persists on disk in the meantime.
+    - name: Install os-maintenance script (runner apt hygiene)
+      become: true
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/runner-os-maintenance.sh
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [ -n "$(docker ps -q)" ]; then
+            echo "== runner busy (containers running) -- skipping this cycle, retry next week =="
+            exit 0
+          fi
+          export DEBIAN_FRONTEND=noninteractive
+          echo "== apt-get update =="
+          apt-get update -y
+          if [ -n "$(docker ps -q)" ]; then
+            echo "== a job started during apt-get update -- skipping upgrade, retry next week =="
+            exit 0
+          fi
+          echo "== apt-get upgrade =="
+          apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade
+          apt-get -y autoremove
+          apt-get -y autoclean
+          if [ -f /var/run/reboot-required ]; then
+            if [ -n "$(docker ps -q)" ]; then
+              echo "== reboot-required but a job started during upgrade -- skipping reboot, retry next week =="
+              exit 0
+            fi
+            echo "== reboot-required, rebooting =="
+            systemd-run --on-active=1 --unit=runner-os-maintenance-reboot reboot
+          else
+            echo "== no reboot required =="
+          fi
+
+    - name: Install os-maintenance systemd service
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/runner-os-maintenance.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Weekly OS/apt maintenance for the CI runner host
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/runner-os-maintenance.sh
+
+    - name: Install os-maintenance systemd timer
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/runner-os-maintenance.timer
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Run OS maintenance weekly
+
+          [Timer]
+          OnCalendar=Sun *-*-* 04:00:00
+          RandomizedDelaySec=600
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Enable + start os-maintenance timer
+      become: true
+      ansible.builtin.systemd:
+        name: runner-os-maintenance.timer
+        enabled: true
+        state: started
+        daemon_reload: true
 
   post_tasks:
     # Operator break-glass root: append committed root pubkeys so that

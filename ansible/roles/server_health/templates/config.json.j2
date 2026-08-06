@@ -1,0 +1,9 @@
+{
+  "disk_threshold_pct": {{ server_health_disk_threshold_pct }},
+  "disk_mounts": {{ server_health_disk_mounts | to_json }},
+  "mem_available_min_pct": {{ server_health_mem_available_min_pct }},
+  "mem_sustained_samples": {{ server_health_mem_sustained_samples }},
+  "swap_max_pct": {{ server_health_swap_max_pct | to_json }},
+  "swap_sustained_samples": {{ server_health_swap_sustained_samples }},
+  "state_dir": "{{ server_health_state_dir }}"
+}

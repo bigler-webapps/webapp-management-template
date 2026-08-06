@@ -25,6 +25,10 @@ ufw_allow_in:
     port: "22"
     proto: tcp
     comment: "ssh — tailnet only (S32)"
+  - from: "100.64.0.0/10"
+    port: "9110"
+    proto: tcp
+    comment: "server-health responder — tailnet only, polled by the monitor"
 
 # S214 — Loki + Grafana run here (see the monitoring play in site.yml).
 loki_retention_days: 30

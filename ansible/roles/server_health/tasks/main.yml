@@ -1,0 +1,96 @@
+---
+# server_health — probe + responder. See defaults/main.yml for the
+# threshold rationale (ordinary HTTP monitor polled over the tailnet, not a
+# push monitor — no secret/token involved anywhere in this role).
+
+- name: Fail loudly if no tailnet address resolved for the responder bind
+  ansible.builtin.assert:
+    that:
+      - server_health_listen_addr | default('', true) | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }}: no tailnet address resolved for server_health_listen_addr —
+      refusing to silently bind the responder to loopback. If this host's tailnet interface
+      is not named `tailscale0` (e.g. a dedicated mgmt daemon), override
+      server_health_listen_addr in its group_vars/host_vars — see group_vars/runners.yml
+      for the pattern.
+    success_msg: "{{ inventory_hostname }}: server_health responder will bind to {{ server_health_listen_addr }}"
+
+- name: Create unprivileged server-health system user
+  become: true
+  ansible.builtin.user:
+    name: "{{ server_health_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+    state: present
+
+- name: Create install + state directories
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ server_health_user }}"
+    group: "{{ server_health_user }}"
+    mode: "0750"
+  loop:
+    - "{{ server_health_install_dir }}"
+    - "{{ server_health_state_dir }}"
+    - /etc/server-health
+
+- name: Install probe script (static — no host-specific literals, see files/probe.py)
+  become: true
+  ansible.builtin.copy:
+    src: probe.py
+    dest: "{{ server_health_install_dir }}/probe.py"
+    owner: "{{ server_health_user }}"
+    group: "{{ server_health_user }}"
+    mode: "0750"
+  notify: restart server-health-responder
+
+- name: Install responder script (static — no host-specific literals, see files/responder.py)
+  become: true
+  ansible.builtin.copy:
+    src: responder.py
+    dest: "{{ server_health_install_dir }}/responder.py"
+    owner: "{{ server_health_user }}"
+    group: "{{ server_health_user }}"
+    mode: "0750"
+  notify: restart server-health-responder
+
+- name: Template per-host threshold config (the only host-specific part)
+  become: true
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: /etc/server-health/config.json
+    owner: "{{ server_health_user }}"
+    group: "{{ server_health_user }}"
+    mode: "0640"
+  notify: restart server-health-responder
+
+- name: Install systemd units (probe timer/service, responder service)
+  become: true
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - server-health-probe.service
+    - server-health-probe.timer
+    - server-health-responder.service
+  notify: reload systemd
+
+- name: Enable + start the probe timer
+  become: true
+  ansible.builtin.systemd:
+    name: server-health-probe.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Enable + start the responder service
+  become: true
+  ansible.builtin.systemd:
+    name: server-health-responder.service
+    enabled: true
+    state: started
+    daemon_reload: true
