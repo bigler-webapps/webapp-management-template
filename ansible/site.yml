@@ -145,6 +145,13 @@
   roles:
     - biglerconsult.infra.base
     - biglerconsult.infra.docker
+    # swap: runner hosts execute heavy parallel builds (multi-slot, memory-
+    # intensive test suites). Without swap the OOM-killer can terminate CI jobs
+    # instantly (exit 137) on RAM-tight hosts. The swap role's own docs warn
+    # about exactly this scenario. Reverses the deliberate no-swap exclusion
+    # that applies to app servers (runners are the most build/memory-heavy
+    # hosts in the fleet).
+    - biglerconsult.infra.swap
     # provision user: identical to the server-play variant so that autonomous
     # CI (tag:ci-provision → tag:ci-runner-host as provision) can connect and
     # sudo. No authorized_keys — Tailscale-SSH handles auth via tailnet ACL.
