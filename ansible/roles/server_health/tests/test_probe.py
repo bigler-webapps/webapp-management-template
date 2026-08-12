@@ -23,13 +23,24 @@ def make_meminfo(mem_total_kb, mem_available_kb, swap_total_kb=0, swap_free_kb=0
     )
 
 
-def make_statvfs(f_blocks, f_bfree):
-    return SimpleNamespace(f_blocks=f_blocks, f_bfree=f_bfree)
+def make_statvfs(f_blocks, f_bfree, f_files=10_000, f_ffree=9_000, f_frsize=1):
+    return SimpleNamespace(
+        f_blocks=f_blocks,
+        f_bfree=f_bfree,
+        f_files=f_files,
+        f_ffree=f_ffree,
+        f_frsize=f_frsize,
+    )
 
 
 BASE_CONFIG = {
     "disk_threshold_pct": 90,
     "disk_mounts": ["/"],
+    "disk_trend_window_sec": 1800,
+    "disk_days_to_full_min": 3,
+    "disk_trend_sustained_samples": 3,
+    "growth_watch_dirs": [],
+    "inode_threshold_pct": 90,
     "mem_available_min_pct": 10,
     "mem_sustained_samples": 3,
     "swap_max_pct": 50,
@@ -89,6 +100,32 @@ def test_disk_used_pct_zero_blocks_raises():
         probe.disk_used_pct(f_blocks=0, f_bfree=0)
 
 
+def test_inode_used_pct():
+    assert probe.inode_used_pct(f_files=1_000, f_ffree=100) == pytest.approx(90.0)
+
+
+def test_inode_used_pct_zero_files_raises():
+    with pytest.raises(probe.ProbeError):
+        probe.inode_used_pct(f_files=0, f_ffree=0)
+
+
+def test_days_to_full_steady_fill_matches_arithmetic_exactly():
+    # 1,000 bytes consumed in 100 seconds; 9,000 bytes remain => 900 seconds.
+    samples = [(1_000.0, 10_000), (1_100.0, 9_000)]
+    assert probe.days_to_full(samples) == pytest.approx(900 / 86_400)
+
+
+def test_days_to_full_flat_or_shrinking_usage_has_no_projection():
+    assert probe.days_to_full([(1_000.0, 10_000), (1_100.0, 10_000)]) is None
+    assert probe.days_to_full([(1_000.0, 9_000), (1_100.0, 10_000)]) is None
+
+
+def test_disk_history_prunes_all_mounts_by_time_not_sample_count():
+    history = probe.DiskHistory({"/old": [(100.0, 10_000)]})
+    history.add("/", timestamp=200.0, free_bytes=9_000, window_sec=30)
+    assert history.samples == {"/": [(200.0, 9_000)]}
+
+
 # --- sustained-breach counter -------------------------------------------------
 
 def test_sustained_breach_tracker_requires_n_consecutive_samples():
@@ -136,6 +173,156 @@ def test_build_status_full_disk_breaches_on_single_sample(tmp_path):
     )
     assert status["disk"]["healthy"] is False
     assert status["mem"]["healthy"] is True
+
+
+def test_build_status_trend_requires_sustained_breaches(tmp_path):
+    cfg = config(tmp_path, disk_days_to_full_min=3, disk_trend_sustained_samples=3)
+    # The second and later samples project exhaustion in 2 days, but a single
+    # steep sample must not make /health/disk fail by itself.
+    for index, free_blocks in enumerate((2_883, 2_882, 2_881, 2_880)):
+        status = probe.build_status(
+            cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {"/": make_statvfs(f_blocks=10_000, f_bfree=free_blocks)},
+            now=1_000_000 + index * 60,
+        )
+        if index < 3:
+            assert status["disk"]["healthy"] is True
+    assert status["disk"]["days_to_full"] == pytest.approx(2.0)
+    assert status["disk"]["healthy"] is False
+
+
+def test_build_status_flat_or_shrinking_disk_never_triggers_trend(tmp_path):
+    cfg = config(tmp_path, disk_days_to_full_min=30, disk_trend_sustained_samples=1)
+    for index, free_blocks in enumerate((500, 500, 600)):
+        status = probe.build_status(
+            cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {"/": make_statvfs(f_blocks=1_000, f_bfree=free_blocks)},
+            now=1_000_000 + index * 60,
+        )
+        assert status["disk"]["days_to_full"] is None
+        assert status["disk"]["healthy"] is True
+
+
+def test_top_growth_directories_handles_empty_single_and_sorted_entries(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert probe.top_growth_directories([str(empty)]) == []
+
+    single = tmp_path / "single"
+    only = single / "only"
+    only.mkdir(parents=True)
+    (only / "data").write_bytes(b"x" * 7)
+    assert probe.top_growth_directories([str(single)]) == [
+        {"path": str(only), "size_bytes": 7}
+    ]
+
+    multi = tmp_path / "multi"
+    for name, size in (("small", 3), ("large", 11), ("middle", 7)):
+        entry = multi / name
+        entry.mkdir(parents=True)
+        (entry / "data").write_bytes(b"x" * size)
+    growth = probe.top_growth_directories([str(multi)])
+    assert [item["path"] for item in growth] == [
+        str(multi / "large"), str(multi / "middle"), str(multi / "small")
+    ]
+    assert [item["size_bytes"] for item in growth] == [11, 7, 3]
+
+
+def test_missing_growth_watch_directory_degrades_to_empty_list(tmp_path):
+    assert probe.top_growth_directories([str(tmp_path / "not-present")]) == []
+
+
+def test_top_growth_directories_sums_content_nested_deeper_than_report_depth(tmp_path):
+    """Regression: a real Docker layer's content lives at overlay2/<hash>/diff/...,
+    three levels below /var/lib/docker -- one level past the OLD recursion bound,
+    which silently reported near-zero for exactly this shape. The reported entry
+    for the depth-2 directory itself must reflect its full nested content."""
+    watch_root = tmp_path / "docker"
+    layer_dir = watch_root / "overlay2" / "abc123"
+    content_dir = layer_dir / "diff" / "usr" / "lib"
+    content_dir.mkdir(parents=True)
+    (content_dir / "big.so").write_bytes(b"x" * 500)
+
+    growth = probe.top_growth_directories([str(watch_root)])
+
+    layer_entry = next(item for item in growth if item["path"] == str(layer_dir))
+    assert layer_entry["size_bytes"] == 500
+
+
+def test_top_growth_directories_degrades_on_permission_error_instead_of_raising(tmp_path, monkeypatch):
+    """Review finding: the probe runs as an unprivileged nologin user
+    with no docker-group grant, and Docker's data root is conventionally
+    root-only -- a PermissionError while scanning it is an expected
+    environmental condition, not a bug. It must not propagate to run()'s
+    fail-loud boundary and take down disk/mem/swap reporting too."""
+    watch_root = tmp_path / "docker"
+    readable = watch_root / "readable"
+    readable.mkdir(parents=True)
+    (readable / "data").write_bytes(b"x" * 9)
+
+    real_scandir = probe.os.scandir
+
+    def flaky_scandir(path):
+        if str(path) == str(watch_root / "overlay2"):
+            raise PermissionError(f"denied: {path}")
+        return real_scandir(path)
+
+    (watch_root / "overlay2").mkdir()
+    monkeypatch.setattr(probe.os, "scandir", flaky_scandir)
+
+    growth = probe.top_growth_directories([str(watch_root)])
+
+    by_path = {item["path"]: item["size_bytes"] for item in growth}
+    assert by_path[str(readable)] == 9
+    assert by_path[str(watch_root / "overlay2")] == 0
+
+
+def test_top_growth_directories_stops_once_the_time_budget_is_spent(tmp_path):
+    """WO risk: 'bound the depth AND the runtime.' Depth alone doesn't cap
+    wall-clock time against an unexpectedly large tree; the deadline must
+    stop further descent rather than let one slow scan delay every
+    subsequent status.json write indefinitely."""
+    watch_root = tmp_path / "docker"
+    nested = watch_root / "a" / "b"
+    nested.mkdir(parents=True)
+    (nested / "data").write_bytes(b"x" * 42)
+
+    calls = {"n": 0}
+
+    def exhausted_after_first_check():
+        calls["n"] += 1
+        return 0.0 if calls["n"] <= 1 else 1_000_000.0  # budget spent immediately after entry
+
+    growth = probe.top_growth_directories([str(watch_root)], clock=exhausted_after_first_check)
+
+    # Deadline computed from the first clock() call; the very next check
+    # (entering scan() for the root) already reads past it, so no entry --
+    # not even the root's own children -- is ever scanned or reported.
+    assert growth == []
+
+
+def test_build_status_inode_exhaustion_is_unhealthy_with_ample_blocks(tmp_path):
+    status = probe.build_status(
+        config(tmp_path),
+        make_meminfo(8_000_000, 4_000_000),
+        {"/": make_statvfs(f_blocks=1_000, f_bfree=500, f_files=1_000, f_ffree=10)},
+        now=1_000_000,
+    )
+    assert status["disk"]["healthy"] is True
+    assert status["inode"]["healthy"] is False
+
+
+def test_build_status_inode_healthy_when_blocks_are_exhausted(tmp_path):
+    status = probe.build_status(
+        config(tmp_path),
+        make_meminfo(8_000_000, 4_000_000),
+        {"/": make_statvfs(f_blocks=1_000, f_bfree=20, f_files=1_000, f_ffree=500)},
+        now=1_000_000,
+    )
+    assert status["disk"]["healthy"] is False
+    assert status["inode"]["healthy"] is True
 
 
 def test_build_status_memory_spike_shorter_than_n_does_not_alert(tmp_path):

@@ -1,11 +1,13 @@
 name: Janitor
 
-# Monthly lightweight cleanup and diagnostics:
-# Docker prune, log cleanup, disk usage report.
+# Lightweight cleanup and diagnostics: Docker prune, log cleanup, disk usage
+# report. A box that rebuilds Docker images on every push can fill its disk
+# well within a month — size the cadence to your own build cache growth rate;
+# daily is a safer starting default than monthly for an actively-deploying app.
 
 on:
   schedule:
-    - cron: "40 3 7 * *"  # 7th of month, 03:40 UTC
+    - cron: "40 3 * * *"  # daily, 03:40 UTC — one hour before a typical Sunday reboot-maintenance window, so a box is never rebooted while sitting on a full disk
   workflow_dispatch:
     inputs:
       target:

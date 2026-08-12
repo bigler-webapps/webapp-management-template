@@ -71,7 +71,14 @@ ufw_allow_in: >-
   {{ ( [{'from': '100.64.0.0/10', 'port': '22', 'proto': 'tcp', 'comment': 'ssh — tailnet only (S32)'}]
        if (runner_ufw_tailnet_only | bool)
        else [{'port': '22', 'proto': 'tcp', 'comment': 'ssh — bootstrap (public + tailnet)'}] )
-     + [{'from': '100.64.0.0/10', 'port': '9110', 'proto': 'tcp', 'comment': 'server-health responder — tailnet only, polled by the monitor'}] }}
+     + [{'from': '100.64.0.0/10', 'port': '9110', 'proto': 'tcp', 'comment': 'server-health responder — tailnet only, polled by the monitor'}]
+     + [{'from': '172.16.0.0/12', 'port': '9110', 'proto': 'tcp', 'comment': 'server-health responder -- Docker bridge range, same-host containers'},
+        {'from': '192.168.0.0/16', 'port': '9110', 'proto': 'tcp', 'comment': 'server-health responder -- Docker bridge range, same-host containers'}] }}
+# Appended OUTSIDE the ternary, like the tailnet :9110 entry above, so the
+# bridge rules hold in BOTH runner_ufw_tailnet_only phases. Same-host
+# containers reach :9110 from a Docker bridge subnet, not the tailnet, so the
+# rule above never matches them and default-deny drops the packet. Ranges, not
+# subnets — Docker renumbers per compose project on recreate.
 
 # ── GitHub runner identity ────────────────────────────────────────────────────
 # Declared here (before requirements.yml SHA bump) so the post_task in site.yml

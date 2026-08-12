@@ -18,6 +18,23 @@ server_health_disk_threshold_pct: 90
 server_health_disk_mounts:
   - /
 
+# Predictive disk alerting averages free-space change over a window. This
+# dampens brief builds while still catching a sustained multi-minute growth
+# spike; it must persist for several samples before affecting /health/disk.
+server_health_disk_trend_window_sec: 1800
+server_health_disk_days_to_full_min: 3
+server_health_disk_trend_sustained_samples: 3
+
+# Diagnostic-only, bounded attribution for a disk incident. Docker/containerd
+# are the known large image-store roots; missing roots simply report no entries.
+server_health_growth_watch_dirs:
+  - /var/lib/docker
+  - /var/lib/containerd
+
+# Inodes can independently make a filesystem unwritable. Match the disk
+# threshold and keep this single-sample metric deliberately simple.
+server_health_inode_threshold_pct: 90
+
 # Memory: REQUIRE a sustained breach (N consecutive probe samples) before
 # reporting down — a build phase on staging/the runner legitimately touches
 # the ceiling for a minute; alerting on that is worse than no alert.

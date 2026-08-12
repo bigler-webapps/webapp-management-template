@@ -6,6 +6,16 @@ on:
       - 'terraform/**'
       - '.github/workflows/terraform-*.yml'
 
+  # Manual plan preview. If your estate has no feature/develop branch (a
+  # single-`main` model — see the branching section of this repo's CLAUDE.md),
+  # the pull_request trigger above is unreachable for previewing an unmerged
+  # change. This dispatch is how you preview it instead: push the candidate
+  # commit to a short-lived, non-`main` ref and run this workflow against that
+  # ref. Read-only: the shared action's PR-comment step is guarded by
+  # `github.event_name == 'pull_request'`, so a dispatch run plans and writes
+  # the output to the job log only. A plan cannot mutate infra.
+  workflow_dispatch:
+
 permissions:
   contents: read
   pull-requests: write   # für PR-Comment mit Plan-Output
