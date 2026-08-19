@@ -33,6 +33,31 @@ from pathlib import Path
 METRICS = ("disk", "mem", "swap")
 
 
+def _disk_reason(entry: dict, healthy: bool) -> str:
+    """disk.healthy used to collapse the absolute-threshold verdict and the
+    trend verdict into one boolean, so an operator reading a disk 503 always
+    saw "threshold breached" -- including when the trigger was the
+    predictive trend and the threshold was nowhere near breached. probe.py
+    now publishes both verdicts separately (threshold_breach, trend_breach);
+    this picks the reason the response body actually reports."""
+    if healthy:
+        if entry.get("trend_display_only"):
+            # Mirrors the swap display_only phrasing below, scoped to the
+            # trend only -- the absolute threshold is still live and could
+            # still fail this host.
+            return "ok (trend display-only, no floor configured)"
+        return "ok"
+    if entry.get("threshold_breach"):
+        return "threshold breached"
+    if entry.get("trend_breach"):
+        days = entry.get("days_to_full")
+        return "trend breached" if days is None else f"trend breached (days_to_full={days})"
+    # Should not happen (healthy is False but neither breach flag is set) --
+    # fall back to the pre-existing default rather than raise on a shape we
+    # don't expect from an older probe.py's status.json.
+    return "threshold breached"
+
+
 def load_status(status_path: Path) -> dict | None:
     try:
         return json.loads(status_path.read_text())
@@ -74,7 +99,9 @@ def evaluate_metric(
         }
     healthy = bool(entry.get("healthy"))
     code = 200 if healthy else 503
-    if healthy and entry.get("display_only"):
+    if metric == "disk":
+        reason = _disk_reason(entry, healthy)
+    elif healthy and entry.get("display_only"):
         # Distinguishable from a metric that simply passed its
         # threshold -- a future reader must not mistake a disabled check for a healthy one.
         reason = "display-only (no threshold configured)"

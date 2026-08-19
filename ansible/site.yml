@@ -56,6 +56,12 @@
     # once per host; it IS repeated in the separate runners play below,
     # since runners are excluded from this play's `hosts:`.
     - server_health
+    # Declares the managed timezone explicitly rather than inheriting
+    # whatever the provisioning image shipped. Runs AFTER server_health so
+    # its restart handler (fired only on an actual timezone change) can
+    # target the probe/responder systemd units, which already exist by
+    # this point.
+    - timezone
 
   post_tasks:
     # Append committed root pubkeys. Uses exclusive=false so the bootstrap
@@ -181,6 +187,11 @@
     - biglerconsult.infra.github_runner
     # See the note in the top play's role list.
     - server_health
+    # See the note in the top play's role list. If this host has its own
+    # OnCalendar-scheduled systemd timers (maintenance, GC, ...), their fire
+    # times shift when this actually changes something on a host that was
+    # previously drifting from UTC.
+    - timezone
 
   tasks:
     # OS/apt maintenance: a shared runner typically has NO apt-update/reboot

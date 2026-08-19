@@ -36,9 +36,10 @@ def make_statvfs(f_blocks, f_bfree, f_files=10_000, f_ffree=9_000, f_frsize=1):
 BASE_CONFIG = {
     "disk_threshold_pct": 90,
     "disk_mounts": ["/"],
-    "disk_trend_window_sec": 1800,
+    "disk_trend_window_sec": 86_400,
     "disk_days_to_full_min": 3,
     "disk_trend_sustained_samples": 3,
+    "disk_trend_floor_margin_pct": None,
     "growth_watch_dirs": [],
     "inode_threshold_pct": 90,
     "mem_available_min_pct": 10,
@@ -190,6 +191,175 @@ def test_build_status_trend_requires_sustained_breaches(tmp_path):
             assert status["disk"]["healthy"] is True
     assert status["disk"]["days_to_full"] == pytest.approx(2.0)
     assert status["disk"]["healthy"] is False
+
+
+def test_build_status_disk_trend_with_ample_headroom_is_display_only(tmp_path):
+    cfg = config(
+        tmp_path,
+        disk_trend_sustained_samples=3,
+        disk_trend_floor_margin_pct=5,
+    )
+    # total = 10,000 * 10,000 = 100,000,000 bytes. Veto boundary (threshold
+    # 90, margin 5) is free% >= 100-(90-5) = 15%, i.e. free_bytes >= 15,000,000.
+    # ~28.8% free here is comfortably inside that -- ample headroom.
+    for index, free_blocks in enumerate((2_883, 2_882, 2_881, 2_880)):
+        status = probe.build_status(
+            cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {"/": make_statvfs(f_blocks=10_000, f_bfree=free_blocks, f_frsize=10_000)},
+            now=1_000_000 + index * 60,
+        )
+        assert status["disk"]["healthy"] is True
+    assert status["disk"]["days_to_full"] == pytest.approx(2.0)
+    assert status["disk"]["trend_display_only"] is True
+    assert status["disk"]["trend_breach"] is False
+
+
+def test_build_status_disk_trend_breaches_below_headroom_floor(tmp_path):
+    cfg = config(
+        tmp_path,
+        disk_trend_sustained_samples=3,
+        disk_trend_floor_margin_pct=5,
+    )
+    # total = 10,000 bytes (frsize=1). Veto boundary is free_bytes >= 1,500.
+    # ~12% free here (1,200-1,203) is BELOW that -- not vetoed, still an
+    # early warning -- and also above the absolute threshold's own 10%-free
+    # trip point, so this isolates the trend firing on its own.
+    for index, free_blocks in enumerate((1_203, 1_202, 1_201, 1_200)):
+        status = probe.build_status(
+            cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {"/": make_statvfs(f_blocks=10_000, f_bfree=free_blocks)},
+            now=1_000_000 + index * 60,
+        )
+    assert status["disk"]["threshold_breach"] is False
+    assert status["disk"]["healthy"] is False
+    assert status["disk"]["trend_breach"] is True
+    assert "trend_display_only" not in status["disk"]
+
+
+def test_build_status_disk_trend_headroom_veto_is_per_mount(tmp_path):
+    cfg = config(
+        tmp_path,
+        disk_trend_sustained_samples=3,
+        disk_trend_floor_margin_pct=5,
+    )
+    # / has ample headroom (frsize=10,000, ~28.8% free -> vetoed); /data has
+    # the same bad slope with only ~12% free -> not vetoed. The healthy
+    # mount must not mask the genuinely low-headroom one.
+    for index, free_blocks in enumerate((2_883, 2_882, 2_881, 2_880)):
+        status = probe.build_status(
+            cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {
+                "/": make_statvfs(f_blocks=10_000, f_bfree=free_blocks, f_frsize=10_000),
+                "/data": make_statvfs(f_blocks=10_000, f_bfree=free_blocks - 1_680),
+            },
+            now=1_000_000 + index * 60,
+        )
+    assert status["disk"]["healthy"] is False
+    assert status["disk"]["trend_breach"] is True
+
+
+def test_margin_scales_with_disk_size_unlike_a_fixed_byte_floor(tmp_path):
+    """A fixed byte floor tuned for one host's disk size can sit ABOVE
+    another, much larger host's own absolute-threshold trip point, which
+    would silently veto a genuine slow fill there forever -- neutering the
+    trend on the larger host, exactly the "over-corrects into uselessness"
+    risk a fixed floor risks. The percentage-point margin is derived
+    per-mount from each host's OWN total size instead, so the SAME 12%-free
+    reading -- inside the genuine early-warning band on any host -- still
+    breaches whether the disk is small or large."""
+    for total_gb in (157, 320):
+        total_bytes = total_gb * 1_000_000_000
+        cfg = config(
+            tmp_path / f"{total_gb}gb",
+            disk_trend_sustained_samples=1,
+            disk_trend_floor_margin_pct=5,
+        )
+        # 12% free: above the absolute threshold's 10%-free trip point (not
+        # yet a threshold breach), but below the margin's 15%-free veto
+        # boundary -- a steep slope should still fire here on EITHER size.
+        # A fixed floor sized for the smaller disk would have wrongly vetoed
+        # this on the larger disk (12% of 320 GB is well above a floor tuned
+        # for 157 GB).
+        free_start = int(total_bytes * 0.12)
+        step = int(total_bytes * 0.001)
+        status = None
+        for i in range(3):
+            status = probe.build_status(
+                cfg,
+                make_meminfo(8_000_000, 4_000_000),
+                {"/": make_statvfs(f_blocks=total_bytes, f_bfree=free_start - i * step)},
+                now=1_000_000 + i * 60,
+            )
+        assert status["disk"]["threshold_breach"] is False, total_gb
+        assert status["disk"]["trend_breach"] is True, total_gb
+
+
+def test_day_window_dilutes_a_dense_burst_the_old_window_would_have_flagged(tmp_path):
+    """The burst fixture uses realistic dense sampling (the real probe runs
+    every 60s) so at least the old 1800s window still has enough retained
+    samples to compute a genuinely alarming rate, rather than falling to
+    `None` from sparsity -- which would prove nothing about burst survival.
+    This feeds the SAME dense sample sequence through both the pre-change
+    1800s window (proving it really would have gone critical) and the new
+    86400s window (proving the identical data is now diluted)."""
+    total_bytes = 1_000_000_000
+    start_free = 900_000_000
+    step_bytes = 1_200_000  # per 300s sample -- a steep, busy-afternoon rate
+    samples = [(i * 300, start_free - i * step_bytes) for i in range(37)]  # 3h, 5-min cadence
+
+    old_cfg = config(
+        tmp_path / "old-window",
+        disk_trend_window_sec=1800,
+        disk_trend_sustained_samples=1,
+        disk_trend_floor_margin_pct=None,
+    )
+    peak = None
+    for offset, free in samples:
+        peak = probe.build_status(
+            old_cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {"/": make_statvfs(f_blocks=total_bytes, f_bfree=free)},
+            now=1_000_000 + offset,
+        )
+    # The old 30-minute window, evaluated at the end of the dense burst,
+    # really would have gone critical -- not an artifact of sparse sampling.
+    assert peak["disk"]["days_to_full"] is not None
+    assert peak["disk"]["days_to_full"] < 3
+    assert peak["disk"]["healthy"] is False
+
+    new_cfg = config(
+        tmp_path / "new-window",
+        disk_trend_sustained_samples=1,
+        disk_trend_floor_margin_pct=5,
+    )
+    status = None
+    for offset, free in samples:
+        status = probe.build_status(
+            new_cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {"/": make_statvfs(f_blocks=total_bytes, f_bfree=free)},
+            now=1_000_000 + offset,
+        )
+    # The burst ends and free space goes flat for the rest of the day. Only
+    # a few representative points are needed -- days_to_full reads just the
+    # oldest/newest retained sample, not every point in between.
+    burst_end_offset = samples[-1][0]
+    burst_end_free = samples[-1][1]
+    for hours in (6, 12, 18, 20):
+        status = probe.build_status(
+            new_cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {"/": make_statvfs(f_blocks=total_bytes, f_bfree=burst_end_free)},
+            now=1_000_000 + burst_end_offset + hours * 3_600,
+        )
+    # Same underlying burst, diluted by the full day including the quiet
+    # tail: the burst's own start sample is still just inside the 24h
+    # retention window, so the whole-day average rate is far gentler.
+    assert status["disk"]["days_to_full"] > 3
+    assert status["disk"]["healthy"] is True
 
 
 def test_build_status_flat_or_shrinking_disk_never_triggers_trend(tmp_path):
@@ -398,6 +568,58 @@ def test_build_status_swap_threshold_still_enforced_when_not_none(tmp_path):
         )
     assert status["swap"]["healthy"] is False
     assert "display_only" not in status["swap"]
+
+
+# --- disk trend display-only --------------------------------------------------
+
+def test_build_status_disk_trend_display_only_when_floor_unset(tmp_path):
+    # Against a probe.py that still does `projected_days < None`, this raises.
+    cfg = config(tmp_path, disk_days_to_full_min=None, disk_trend_sustained_samples=1)
+    status = None
+    # A steep, sustained decline that WOULD trip the trend at any sane floor.
+    for index, free_blocks in enumerate((500, 480, 460, 440)):
+        status = probe.build_status(
+            cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {"/": make_statvfs(f_blocks=1000, f_bfree=free_blocks)},
+            now=1_000_000 + index * 60,
+        )
+    assert status["disk"]["days_to_full"] is not None  # diagnostics keep working
+    assert status["disk"]["healthy"] is True
+    assert status["disk"]["trend_display_only"] is True
+    assert status["disk"]["trend_breach"] is False
+
+
+def test_build_status_disk_trend_still_enforced_when_floor_is_set(tmp_path):
+    # Regression guard: unchanged behaviour when a floor IS configured --
+    # display-only must be opt-in via None, not the only path left standing.
+    cfg = config(tmp_path, disk_days_to_full_min=3, disk_trend_sustained_samples=3)
+    status = None
+    for index, free_blocks in enumerate((2_883, 2_882, 2_881, 2_880)):
+        status = probe.build_status(
+            cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {"/": make_statvfs(f_blocks=10_000, f_bfree=free_blocks)},
+            now=1_000_000 + index * 60,
+        )
+    assert status["disk"]["healthy"] is False
+    assert status["disk"]["trend_breach"] is True
+    assert status["disk"]["threshold_breach"] is False
+    assert "trend_display_only" not in status["disk"]
+
+
+def test_build_status_absolute_threshold_still_wins_with_trend_disabled(tmp_path):
+    # The dangerous regression to guard against: disabling the trend must
+    # never blunt the absolute threshold on the same host.
+    cfg = config(tmp_path, disk_days_to_full_min=None)
+    status = probe.build_status(
+        cfg,
+        make_meminfo(8_000_000, 4_000_000),
+        {"/": make_statvfs(f_blocks=1000, f_bfree=20)},  # 98% used > 90% threshold
+    )
+    assert status["disk"]["healthy"] is False
+    assert status["disk"]["threshold_breach"] is True
+    assert status["disk"]["trend_display_only"] is True
 
 
 def test_run_exits_nonzero_and_skips_status_write_on_missing_config(tmp_path):

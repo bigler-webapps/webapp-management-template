@@ -142,3 +142,103 @@ def test_evaluate_metric_display_only_missing_status_still_returns_503():
     code, payload = responder.evaluate_metric(None, "swap", None, now, MAX_AGE)
     assert code == 503
     assert payload["healthy"] is False
+
+
+# --- disk reason splitting ------------------------------------------------
+#
+# Before this change, /health/disk always said "threshold breached"
+# regardless of which of the two independent verdicts (absolute usage vs
+# predictive trend) actually fired -- an operator reading such an incident
+# report could be told a threshold breach while disk usage was nowhere near
+# the configured threshold.
+
+def threshold_breach_status():
+    return {
+        "disk": {
+            "value_pct": 95.0,
+            "healthy": False,
+            "threshold_breach": True,
+            "trend_breach": False,
+            "days_to_full": None,
+        },
+    }
+
+
+def trend_breach_status():
+    return {
+        "disk": {
+            "value_pct": 60.85,
+            "healthy": False,
+            "threshold_breach": False,
+            "trend_breach": True,
+            "days_to_full": 0.77,
+        },
+    }
+
+
+def trend_display_only_status():
+    return {
+        "disk": {
+            "value_pct": 60.85,
+            "healthy": True,
+            "threshold_breach": False,
+            "trend_breach": False,
+            "days_to_full": 0.77,
+            "trend_display_only": True,
+        },
+    }
+
+
+def test_evaluate_metric_disk_threshold_breach_names_threshold():
+    now = 1_000_000.0
+    code, payload = responder.evaluate_metric(
+        threshold_breach_status(), "disk", now - 10, now, MAX_AGE
+    )
+    assert code == 503
+    assert payload["reason"] == "threshold breached"
+
+
+def test_evaluate_metric_disk_trend_breach_names_trend_not_threshold():
+    # Must fail against a responder.py that always says "threshold breached"
+    # for any unhealthy disk entry.
+    now = 1_000_000.0
+    code, payload = responder.evaluate_metric(
+        trend_breach_status(), "disk", now - 10, now, MAX_AGE
+    )
+    assert code == 503
+    assert "threshold" not in payload["reason"]
+    assert "trend" in payload["reason"]
+
+
+def test_evaluate_metric_disk_trend_breach_and_threshold_breach_are_distinguishable():
+    now = 1_000_000.0
+    _, threshold_payload = responder.evaluate_metric(
+        threshold_breach_status(), "disk", now - 10, now, MAX_AGE
+    )
+    _, trend_payload = responder.evaluate_metric(
+        trend_breach_status(), "disk", now - 10, now, MAX_AGE
+    )
+    assert threshold_payload["reason"] != trend_payload["reason"]
+
+
+def test_evaluate_metric_disk_trend_display_only_healthy_is_distinguishable_from_ok():
+    now = 1_000_000.0
+    code, payload = responder.evaluate_metric(
+        trend_display_only_status(), "disk", now - 10, now, MAX_AGE
+    )
+    assert code == 200
+    assert payload["healthy"] is True
+    assert payload["reason"] != "ok"
+    assert "display-only" in payload["reason"]
+
+
+def test_evaluate_metric_disk_backward_compatible_when_breach_flags_absent():
+    # An older probe.py's status.json has no threshold_breach/trend_breach
+    # keys -- must not crash, and must still report the pre-existing
+    # default reason.
+    now = 1_000_000.0
+    code, payload = responder.evaluate_metric(
+        breached_status(), "disk", now - 10, now, MAX_AGE
+    )
+    assert code == 503
+    assert payload["reason"] == "threshold breached"

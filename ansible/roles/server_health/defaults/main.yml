@@ -18,12 +18,35 @@ server_health_disk_threshold_pct: 90
 server_health_disk_mounts:
   - /
 
-# Predictive disk alerting averages free-space change over a window. This
-# dampens brief builds while still catching a sustained multi-minute growth
-# spike; it must persist for several samples before affecting /health/disk.
-server_health_disk_trend_window_sec: 1800
+# Predictive disk alerting estimates free-space change over a full calendar
+# day by default. A day-long window absorbs one heavy deploy afternoon into
+# its own average while a fill that persists day over day remains visible.
+# This trend is for a slow, multi-day fill; a fast/urgent drop is still
+# caught by disk_threshold_pct above, unaffected by the trend guard. Shorten
+# this if your fleet needs faster trend detection than a daily cadence.
+server_health_disk_trend_window_sec: 86400
 server_health_disk_days_to_full_min: 3
 server_health_disk_trend_sustained_samples: 3
+
+# A projected breach is display-only while a mount's free space is still this
+# many PERCENTAGE POINTS above where the absolute threshold would itself
+# fire -- e.g. at threshold 90 and margin 5, the trend is vetoed while
+# used% < 85% (free% > 15%), and can only breach once usage is already
+# within 5 points of the absolute cutoff. Derived per-mount from
+# disk_threshold_pct and each mount's OWN total size, not a fixed byte
+# count: a single global byte floor tuned for one host's disk can sit ABOVE
+# a larger host's own absolute-threshold trip point and neuter the trend
+# there entirely -- across a fleet of differently-sized disks, a fixed-byte
+# floor tuned for the smallest one would never even apply to the largest. A
+# percentage MARGIN scales automatically with each host's own disk size; the
+# actual runtime comparison stays in absolute bytes (usable headroom is an
+# absolute capacity, not a fixed fraction), it is just the CONSTANT that is
+# now expressed proportionally instead of as one global number someone
+# would otherwise have to re-tune per host. Hosts that need no trend at all
+# can opt out entirely with disk_days_to_full_min: null (e.g. a host whose
+# own scheduled maintenance resets make its sawtooth projection meaningless)
+# -- a separate, coarser knob from this margin.
+server_health_disk_trend_floor_margin_pct: 5
 
 # Diagnostic-only, bounded attribution for a disk incident. Docker/containerd
 # are the known large image-store roots; missing roots simply report no entries.

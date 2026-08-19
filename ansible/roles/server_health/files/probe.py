@@ -198,12 +198,29 @@ def stat_free_bytes(stat: object) -> int:
     return int(stat.f_bfree) * int(block_size)
 
 
+def stat_total_bytes(stat: object) -> int:
+    """Return total bytes from statvfs, rejecting an invalid block size.
+
+    A fixed absolute-byte headroom floor cannot be a single fleet-wide
+    constant -- a floor tuned against one host's disk size can sit ABOVE
+    another, larger host's own absolute-threshold trip point, which would
+    neuter the trend there entirely (it could never fire before the
+    absolute threshold does). The floor is derived per-mount from this and
+    disk_threshold_pct instead, so it scales with each host's own disk size
+    automatically -- no per-host override to remember."""
+    block_size = getattr(stat, "f_frsize", 0) or getattr(stat, "f_bsize", 0)
+    if block_size <= 0:
+        raise ProbeError("statvfs fragment size is zero or negative")
+    return int(stat.f_blocks) * int(block_size)
+
+
 def days_to_full(samples: list[tuple[float, int]]) -> float | None:
     """Project exhaustion from the oldest/newest samples in the time window.
 
-    A 30-minute window is long enough to mute short build bursts, yet remains
-    responsive to a sustained multi-minute workload-driven growth spike. The
-    sustained-breach counter absorbs residual two-point slope noise.
+    The configured window makes a deploy afternoon contribute only its
+    share of a longer period, while a fill that persists over the full
+    window remains visible. The sustained-breach counter absorbs residual
+    two-point slope noise.
     """
     if len(samples) < 2:
         return None
@@ -343,11 +360,16 @@ def build_status(config: dict, meminfo_text: str, disk_stats: dict, now: float |
     history_path = Path(config["state_dir"]) / "disk_history.json"
     history = DiskHistory.load(history_path)
     trend_by_mount = {}
+    free_bytes_by_mount = {}
+    total_bytes_by_mount = {}
     for mount, stat in disk_stats.items():
+        free_bytes = stat_free_bytes(stat)
+        free_bytes_by_mount[mount] = free_bytes
+        total_bytes_by_mount[mount] = stat_total_bytes(stat)
         samples = history.add(
             mount,
             now,
-            stat_free_bytes(stat),
+            free_bytes,
             config["disk_trend_window_sec"],
         )
         trend_by_mount[mount] = days_to_full(samples)
@@ -359,9 +381,45 @@ def build_status(config: dict, meminfo_text: str, disk_stats: dict, now: float |
     tracker = SustainedBreachTracker.load(Path(config["state_dir"]) / "breach_counts.json")
 
     disk_breach = tracker.update("disk", disk_breach_raw, required_samples=1)
+    days_min = config["disk_days_to_full_min"]
+    margin_pct = config.get("disk_trend_floor_margin_pct")
+
+    def mount_would_breach(mount: str, days: float | None) -> bool:
+        if days_min is None or days is None or days >= days_min:
+            return False
+        if margin_pct is not None:
+            # Derived per-mount from this host's OWN total size and its OWN
+            # absolute threshold, not a fixed global byte count. The trend is
+            # vetoed while free space is still comfortably above where the
+            # absolute threshold would fire -- margin_pct is how much extra
+            # headroom, in percentage points, is required beyond that.
+            total = total_bytes_by_mount[mount]
+            if total > 0:
+                # disk_threshold_pct is a USED percentage, so the free-space
+                # equivalent of "margin_pct points inside it" is
+                # 100 - (threshold - margin), not (threshold - margin) itself.
+                veto_free_pct = 100.0 - (config["disk_threshold_pct"] - margin_pct)
+                veto_free_bytes = total * veto_free_pct / 100.0
+                if free_bytes_by_mount[mount] >= veto_free_bytes:
+                    return False  # Ample absolute headroom vetoes the projection.
+        return True
+
+    trend_breach_candidate = any(
+        mount_would_breach(mount, days) for mount, days in trend_by_mount.items()
+    )
+    slope_alone_would_breach = any(
+        days_min is not None and days is not None and days < days_min
+        for days in trend_by_mount.values()
+    )
+    # One display-only contract: a host may opt out statically (days_min is
+    # null), or a sample may be dynamically vetoed while all projected mounts
+    # have ample headroom. The projection remains published in both cases.
+    disk_trend_display_only = days_min is None or (
+        slope_alone_would_breach and not trend_breach_candidate
+    )
     disk_trend_breach = tracker.update(
         "disk_trend",
-        projected_days is not None and projected_days < config["disk_days_to_full_min"],
+        trend_breach_candidate,
         required_samples=config["disk_trend_sustained_samples"],
     )
     mem_breach = tracker.update(
@@ -387,18 +445,27 @@ def build_status(config: dict, meminfo_text: str, disk_stats: dict, now: float |
     if swap_display_only:
         swap_entry["display_only"] = True
 
+    disk_entry = {
+        "value_pct": round(disk_pct, 2),
+        "healthy": not (disk_breach or disk_trend_breach),
+        "mounts": disk_detail,
+        "days_to_full": None if projected_days is None else round(projected_days, 2),
+        "trend_mounts": {
+            mount: None if days is None else round(days, 2) for mount, days in trend_by_mount.items()
+        },
+        "growth": growth,
+        # The two verdicts that used to collapse into a single boolean
+        # ("healthy") are kept apart so the responder can name which one
+        # fired instead of always reporting "threshold breached".
+        "threshold_breach": disk_breach,
+        "trend_breach": disk_trend_breach,
+    }
+    if disk_trend_display_only:
+        disk_entry["trend_display_only"] = True
+
     return {
         "generated_at": now,
-        "disk": {
-            "value_pct": round(disk_pct, 2),
-            "healthy": not (disk_breach or disk_trend_breach),
-            "mounts": disk_detail,
-            "days_to_full": None if projected_days is None else round(projected_days, 2),
-            "trend_mounts": {
-                mount: None if days is None else round(days, 2) for mount, days in trend_by_mount.items()
-            },
-            "growth": growth,
-        },
+        "disk": disk_entry,
         "inode": {"value_pct": round(inode_pct, 2), "healthy": not inode_breach, "mounts": inode_detail},
         "mem": {"value_pct": round(mem_pct, 2), "healthy": not mem_breach},
         "swap": swap_entry,
