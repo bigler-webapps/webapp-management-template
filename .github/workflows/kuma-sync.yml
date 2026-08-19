@@ -4,12 +4,12 @@ name: Kuma Monitor Sync
 # Replaces the per-app register-kuma-monitors step so concurrent deploys no
 # longer race over the single-threaded Kuma Socket.IO server.
 #
-# Runs automatically once daily and can be dispatched manually with an
+# Runs automatically every 6 hours and can be dispatched manually with an
 # optional app_filter to limit the sync to specific apps.
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       app_filter:
