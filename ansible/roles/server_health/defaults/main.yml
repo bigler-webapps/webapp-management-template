@@ -8,8 +8,13 @@
 # Override per host via ansible/host_vars/<host>.yml, same pattern as the
 # swap role.
 
-# Disk: fires on a SINGLE sample (disk usage doesn't oscillate the way
-# memory does, so one breached sample is enough to alert).
+# Disk: the ALARM still fires on a SINGLE sample -- a full disk cannot wait
+# for confirmation. But "disk doesn't oscillate" is not universally true: a
+# host whose usage sits pinned near the threshold can cross it repeatedly
+# over hours or days, and a single-sample all-clear turns one real, sustained
+# breach into many separate DOWN/UP transitions on whatever's consuming this
+# role's status. Recovery is now debounced; see
+# server_health_disk_recovery_sustained_samples below.
 # Default is 90% rather than a lower value: a production host's baseline
 # disk usage right after routine cleanup can already sit close to 80%,
 # which would leave little headroom and alert almost immediately. Tune
@@ -17,6 +22,14 @@
 server_health_disk_threshold_pct: 90
 server_health_disk_mounts:
   - /
+
+# How many CONSECUTIVE under-threshold probe samples (server_health_probe_interval_sec
+# apart) are required before a disk breach clears. Matches
+# disk_trend_sustained_samples' existing order of magnitude below: enough to
+# absorb one noisy sample right at the boundary without meaningfully delaying
+# a genuine recovery report. Tune against your own fleet's measured probe
+# interval and how fast a host's disk usage actually moves.
+server_health_disk_recovery_sustained_samples: 3
 
 # Predictive disk alerting estimates free-space change over a full calendar
 # day by default. A day-long window absorbs one heavy deploy afternoon into

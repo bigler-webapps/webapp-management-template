@@ -3,8 +3,10 @@
 
 Reads disk / inode / memory / swap usage, applies per-metric thresholds (memory,
 swap, and projected disk exhaustion require N consecutive sampled breaches;
-the absolute disk threshold fires on a single sample), and writes the result atomically to
-<state_dir>/status.json for the responder to serve.
+the absolute disk threshold fires on a single sample, but its RECOVERY is
+debounced -- N consecutive clean samples -- so a sawtooth around the
+threshold reads as one sustained breach, not repeated flaps), and writes the
+result atomically to <state_dir>/status.json for the responder to serve.
 
 Config-driven (no host-specific literals in this file): reads
 /etc/server-health/config.json, templated per-host by the server_health
@@ -118,12 +120,43 @@ class SustainedBreachTracker:
     def update(self, metric: str, breached: bool, required_samples: int) -> bool:
         """Returns True iff `metric` has now breached `required_samples`
         consecutive times. required_samples <= 1 means "fires on one
-        sample" (used for disk)."""
+        sample" (used for the disk trend and, historically, disk itself)."""
         if breached:
             self.counts[metric] = self.counts.get(metric, 0) + 1
         else:
             self.counts[metric] = 0
         return self.counts[metric] >= max(1, required_samples)
+
+    def update_latched(self, metric: str, breached: bool, recovery_samples: int) -> bool:
+        """Asymmetric hysteresis: a single sample still LATCHES the breach
+        immediately (unlike `update`, which needs N consecutive samples to
+        fire at all), but the latch only CLEARS after `recovery_samples`
+        consecutive non-breaching samples. Used for the disk absolute
+        threshold: a host whose usage oscillates right around the threshold
+        should still alarm immediately (a full disk is urgent), but should
+        not flap healthy/unhealthy on every sample that dips back under it.
+        Persisted in the same `counts` dict/state file as `update`, under
+        distinct per-metric keys, so a corrupt state file's existing
+        "start clean" recovery (see `load`) covers this transparently.
+
+        recovery_samples <= 1 collapses to the OLD un-latched behaviour
+        (clears on the very next clean sample) -- a real config value below
+        that is a misconfiguration, not a case to special-case here."""
+        latch_key = f"{metric}_latched"
+        streak_key = f"{metric}_clean_streak"
+        if breached:
+            self.counts[latch_key] = 1
+            self.counts[streak_key] = 0
+            return True
+        if not self.counts.get(latch_key, 0):
+            return False
+        streak = self.counts.get(streak_key, 0) + 1
+        if streak >= max(1, recovery_samples):
+            self.counts[latch_key] = 0
+            self.counts[streak_key] = 0
+            return False
+        self.counts[streak_key] = streak
+        return True
 
 
 class DiskHistory:
@@ -380,7 +413,11 @@ def build_status(config: dict, meminfo_text: str, disk_stats: dict, now: float |
 
     tracker = SustainedBreachTracker.load(Path(config["state_dir"]) / "breach_counts.json")
 
-    disk_breach = tracker.update("disk", disk_breach_raw, required_samples=1)
+    # Firing stays single-sample (immediate -- a full disk cannot wait), only
+    # the all-clear is debounced. See update_latched's docstring.
+    disk_breach = tracker.update_latched(
+        "disk", disk_breach_raw, recovery_samples=config["disk_recovery_sustained_samples"]
+    )
     days_min = config["disk_days_to_full_min"]
     margin_pct = config.get("disk_trend_floor_margin_pct")
 

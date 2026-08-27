@@ -35,6 +35,7 @@ def make_statvfs(f_blocks, f_bfree, f_files=10_000, f_ffree=9_000, f_frsize=1):
 
 BASE_CONFIG = {
     "disk_threshold_pct": 90,
+    "disk_recovery_sustained_samples": 3,
     "disk_mounts": ["/"],
     "disk_trend_window_sec": 86_400,
     "disk_days_to_full_min": 3,
@@ -145,6 +146,62 @@ def test_sustained_breach_tracker_disk_fires_on_one_sample():
     assert tracker.update("disk", True, required_samples=1) is True
 
 
+# --- latched (asymmetric) hysteresis ------------------------------------------
+
+def test_update_latched_fires_immediately_on_a_single_breach():
+    """The alarm side must not regress to needing multiple samples -- a full
+    disk cannot wait for confirmation."""
+    tracker = probe.SustainedBreachTracker()
+    assert tracker.update_latched("disk", True, recovery_samples=3) is True
+
+
+def test_update_latched_sawtooth_around_threshold_stays_one_breach_not_four():
+    """Regression for the actual failure mode: over/under/over/under right at
+    the boundary must read as ONE continuous breach, not toggle."""
+    tracker = probe.SustainedBreachTracker()
+    results = [
+        tracker.update_latched("disk", breached, recovery_samples=3)
+        for breached in (True, False, True, False)
+    ]
+    # First sample latches; the two intervening clean samples (streak 1, 2)
+    # are short of recovery_samples=3, so the latch never clears mid-sequence.
+    assert results == [True, True, True, True]
+
+
+def test_update_latched_clears_after_n_consecutive_clean_samples():
+    tracker = probe.SustainedBreachTracker()
+    assert tracker.update_latched("disk", True, recovery_samples=3) is True
+    assert tracker.update_latched("disk", False, recovery_samples=3) is True  # streak 1
+    assert tracker.update_latched("disk", False, recovery_samples=3) is True  # streak 2
+    assert tracker.update_latched("disk", False, recovery_samples=3) is False  # streak 3 -> clear
+
+
+def test_update_latched_a_late_re_breach_resets_the_clean_streak():
+    tracker = probe.SustainedBreachTracker()
+    tracker.update_latched("disk", True, recovery_samples=3)
+    tracker.update_latched("disk", False, recovery_samples=3)  # streak 1
+    tracker.update_latched("disk", False, recovery_samples=3)  # streak 2
+    # A breach one sample before the streak would have cleared -- must
+    # re-latch and require a fresh 3 consecutive clean samples, not credit
+    # the interrupted streak.
+    assert tracker.update_latched("disk", True, recovery_samples=3) is True
+    assert tracker.update_latched("disk", False, recovery_samples=3) is True  # streak 1 again
+    assert tracker.update_latched("disk", False, recovery_samples=3) is True  # streak 2 again
+    assert tracker.update_latched("disk", False, recovery_samples=3) is False  # streak 3 -> clear
+
+
+def test_update_latched_persists_across_load_save(tmp_path):
+    state_path = tmp_path / "breach_counts.json"
+    tracker = probe.SustainedBreachTracker()
+    tracker.update_latched("disk", True, recovery_samples=3)
+    tracker.update_latched("disk", False, recovery_samples=3)  # streak 1
+    tracker.save(state_path)
+
+    reloaded = probe.SustainedBreachTracker.load(state_path)
+    assert reloaded.update_latched("disk", False, recovery_samples=3) is True  # streak 2, still latched
+    assert reloaded.update_latched("disk", False, recovery_samples=3) is False  # streak 3 -> clear
+
+
 def test_sustained_breach_tracker_persists_across_load_save(tmp_path):
     state_path = tmp_path / "breach_counts.json"
     tracker = probe.SustainedBreachTracker()
@@ -174,6 +231,57 @@ def test_build_status_full_disk_breaches_on_single_sample(tmp_path):
     )
     assert status["disk"]["healthy"] is False
     assert status["mem"]["healthy"] is True
+
+
+def test_build_status_disk_breach_still_fires_on_first_sample(tmp_path):
+    """The alarm must not get slower. A single over-threshold sample must
+    report unhealthy immediately, same as the un-latched behaviour."""
+    cfg = config(tmp_path, disk_recovery_sustained_samples=3)
+    status = probe.build_status(
+        cfg,
+        make_meminfo(8_000_000, 4_000_000),
+        {"/": make_statvfs(f_blocks=1000, f_bfree=20)},  # 98% used > 90%
+    )
+    assert status["disk"]["healthy"] is False
+    assert status["disk"]["threshold_breach"] is True
+
+
+def test_build_status_sawtooth_around_threshold_is_one_breach_not_four(tmp_path):
+    """The actual regression this hysteresis fixes: a sequence that crosses
+    the threshold, recovers, crosses again, recovers again must report a
+    SINGLE ongoing breach, not flap healthy/unhealthy on every dip below the
+    threshold."""
+    cfg = config(tmp_path, disk_recovery_sustained_samples=3)
+    # 98%, 85%, 98%, 85% used, at f_blocks=1000: bfree 20, 150, 20, 150.
+    healthy_flags = []
+    for index, f_bfree in enumerate((20, 150, 20, 150)):
+        status = probe.build_status(
+            cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {"/": make_statvfs(f_blocks=1000, f_bfree=f_bfree)},
+            now=1_000_000 + index * 60,
+        )
+        healthy_flags.append(status["disk"]["healthy"])
+    assert healthy_flags == [False, False, False, False]
+
+
+def test_build_status_disk_recovers_after_sustained_clean_samples(tmp_path):
+    """A sequence that cleanly and durably falls below the threshold must
+    still recover -- hysteresis debounces flapping, it must not become a
+    second, silent way to hide a real recovery."""
+    cfg = config(tmp_path, disk_recovery_sustained_samples=3)
+    # One breach, then 3 consecutive clean samples (85% used = bfree 150).
+    f_bfree_sequence = (20, 150, 150, 150)
+    status = None
+    for index, f_bfree in enumerate(f_bfree_sequence):
+        status = probe.build_status(
+            cfg,
+            make_meminfo(8_000_000, 4_000_000),
+            {"/": make_statvfs(f_blocks=1000, f_bfree=f_bfree)},
+            now=1_000_000 + index * 60,
+        )
+    assert status["disk"]["healthy"] is True
+    assert status["disk"]["threshold_breach"] is False
 
 
 def test_build_status_trend_requires_sustained_breaches(tmp_path):

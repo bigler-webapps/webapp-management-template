@@ -1,6 +1,13 @@
 # Kuma → Claude Relay
-# S33: Pin digest via Renovate (add to renovate-config/auto-merge.json: infra-managers)
-FROM python:3.12-slim
+# Pin digest via Renovate (add to renovate-config/auto-merge.json: infra-managers)
+#
+# Kept current deliberately rather than left to drift: Renovate's own
+# major/minor split can under-flag a multi-minor jump (a datasource that only
+# sees the image tag, not Python's own versioning, may call two skipped
+# minors "non-major"). Before bumping, verify the build still completes and
+# your actual dependencies (this image's docker/http client libraries, and
+# the relay module itself) still import cleanly on the new minor.
+FROM python:3.14-slim
 
 WORKDIR /app
 

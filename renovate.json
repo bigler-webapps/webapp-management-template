@@ -6,6 +6,18 @@
   ],
   "baseBranchPatterns": [
     "main"
+  ],
+  "packageRules": [
+    {
+      "description": "hashicorp/terraform in scripts/terraform-cli/docker-compose.yml is the LOCAL dev wrapper and must track the version your terraform-plan/terraform-apply CI actions run, not the newest release. Bumping it alone creates terraform fmt divergence between a developer's machine and the CI check. Moving it is a deliberate two-file change (this file + the pinned image), so Renovate does not propose it on its own.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "hashicorp/terraform"
+      ],
+      "enabled": false
+    }
   ]
 }
 
