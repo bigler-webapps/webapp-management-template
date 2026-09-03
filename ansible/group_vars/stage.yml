@@ -38,3 +38,25 @@ ufw_allow_in:
     port: "8090"
     proto: tcp
     comment: "claude-relay webhook — tailnet only (Kuma -> relay)"
+  - from: "100.64.0.0/10"
+    port: "9110"
+    proto: tcp
+    comment: "server-health responder — tailnet only, polled by the monitor"
+  # Same-host containers reach :9110 from a Docker bridge subnet, not from the
+  # tailnet, so the rule above never matches them and default-deny drops the
+  # packet. Ranges, not subnets — Docker allocates per compose project and
+  # renumbers on recreate. Off-host reachability is NOT prevented by this rule
+  # (UFW matches on source IP only, no interface constraint) but by the
+  # topology around it: verify these ranges carry only Docker bridges on this
+  # host before adding one with provider private networking in the same CIDRs,
+  # and note RFC1918 sources are not internet-routable / dropped at the
+  # provider edge regardless. The responder also still binds ONLY to the
+  # tailnet address, which is the real second line of defence.
+  - from: "172.16.0.0/12"
+    port: "9110"
+    proto: tcp
+    comment: "server-health responder -- Docker bridge range, same-host containers"
+  - from: "192.168.0.0/16"
+    port: "9110"
+    proto: tcp
+    comment: "server-health responder -- Docker bridge range, same-host containers"

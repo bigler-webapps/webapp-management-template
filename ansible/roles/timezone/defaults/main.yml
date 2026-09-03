@@ -1,0 +1,9 @@
+---
+# Single overridable default: every managed host declares its timezone
+# explicitly rather than inheriting whatever its provisioning image happened
+# to ship. UTC because every timestamp that leaves these hosts
+# already meets UTC on the other side (GitHub Actions log stamps, restic
+# snapshot times, Loki ingestion), and a DST-free zone removes the
+# twice-yearly hour that log correlation and OnCalendar schedules would
+# otherwise have to reason about.
+managed_timezone: Etc/UTC

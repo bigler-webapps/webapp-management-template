@@ -49,6 +49,23 @@
     - srv_dirs
     - biglerconsult.infra.swap
     - biglerconsult.infra.promtail
+    # Disk/mem/swap threshold probe + responder, polled by an ordinary HTTP
+    # monitor over the tailnet (no push monitor, no token/secret). This play
+    # (all:!runners) already covers the `monitoring` host, so it is NOT
+    # repeated in the monitoring play below — every other role here applies
+    # once per host; it IS repeated in the separate runners play below,
+    # since runners are excluded from this play's `hosts:`.
+    - server_health
+    # Declares the managed timezone explicitly rather than inheriting
+    # whatever the provisioning image shipped. Runs AFTER server_health so
+    # its restart handler (fired only on an actual timezone change) can
+    # target the probe/responder systemd units, which already exist by
+    # this point.
+    - timezone
+    # Host-level cron schedules for commands that must run inside an app's
+    # Compose service (e.g. a periodic management command). Hosts without
+    # declared jobs (app_cron_jobs: [] by default) remain a no-op.
+    - app_cron
 
   post_tasks:
     # Append committed root pubkeys. Uses exclusive=false so the bootstrap
@@ -92,6 +109,10 @@
 
   roles:
     - biglerconsult.infra.loki
+    # server_health is NOT added here — the top play (hosts: all:!runners)
+    # already includes the `monitoring` group, so adding it here too would
+    # apply it twice on this host. Same single-application pattern as
+    # promtail/swap above.
 
   tasks:
     # Expose Kuma (binds 127.0.0.1:3001) on the tailnet at :8443 so CI
@@ -168,6 +189,237 @@
     # unit. The mgmt instance is established ONCE by the operator bootstrap
     # (runner-bootstrap.yml, via public-IP root) and must not be touched here.
     - biglerconsult.infra.github_runner
+    # See the note in the top play's role list.
+    - server_health
+    # See the note in the top play's role list. If this host has its own
+    # OnCalendar-scheduled systemd timers (maintenance, GC, ...), their fire
+    # times shift when this actually changes something on a host that was
+    # previously drifting from UTC.
+    - timezone
+
+  tasks:
+    # OS/apt maintenance: a shared runner typically has NO apt-update/reboot
+    # coverage of its own — a generic "run maintenance over SSH from CI"
+    # workflow targeting app servers would be circular if pointed at the
+    # runner that executes it. A LOCAL systemd timer mirrors that same
+    # logic (update, upgrade, autoremove, autoclean, reboot only if
+    # /var/run/reboot-required exists), self-contained on the runner host.
+    #
+    # If this is a SHARED runner (limited JIT slots), a reboot mid-job kills
+    # any running job(s) and stalls the queue — Docker itself being
+    # upgraded/restarted by apt can have the same effect even without a
+    # reboot. Gate the ENTIRE run on runner idleness (no running containers
+    # = no active CI job, assuming this host's only workload is executing
+    # CI jobs) and skip cleanly if busy — the weekly cadence retries next
+    # week, and reboot-required (if any) persists on disk in the meantime.
+    - name: Install os-maintenance script (runner apt hygiene)
+      become: true
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/runner-os-maintenance.sh
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [ -n "$(docker ps -q)" ]; then
+            echo "== runner busy (containers running) -- skipping this cycle, retry next week =="
+            exit 0
+          fi
+          export DEBIAN_FRONTEND=noninteractive
+          echo "== apt-get update =="
+          apt-get update -y
+          if [ -n "$(docker ps -q)" ]; then
+            echo "== a job started during apt-get update -- skipping upgrade, retry next week =="
+            exit 0
+          fi
+          echo "== apt-get upgrade =="
+          apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade
+          apt-get -y autoremove
+          apt-get -y autoclean
+          if [ -f /var/run/reboot-required ]; then
+            if [ -n "$(docker ps -q)" ]; then
+              echo "== reboot-required but a job started during upgrade -- skipping reboot, retry next week =="
+              exit 0
+            fi
+            echo "== reboot-required, rebooting =="
+            systemd-run --on-active=1 --unit=runner-os-maintenance-reboot reboot
+          else
+            echo "== no reboot required =="
+          fi
+
+    - name: Install os-maintenance systemd service
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/runner-os-maintenance.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Weekly OS/apt maintenance for the CI runner host
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/runner-os-maintenance.sh
+
+    - name: Install os-maintenance systemd timer
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/runner-os-maintenance.timer
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Run OS maintenance weekly
+
+          [Timer]
+          OnCalendar=Sun *-*-* 04:00:00
+          RandomizedDelaySec=600
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Enable + start os-maintenance timer
+      become: true
+      ansible.builtin.systemd:
+        name: runner-os-maintenance.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # Midday GC is buildx-only (deliberately NOT gated on runner idleness, unlike
+    # the weekly OS-maintenance script above) so working-hours jobs keep their
+    # pulled images while the build cache still gets reclaimed on a busy day. An
+    # active build may lose a future cache hit, but never work already in progress.
+    #
+    # --reserved-space, not --keep-storage: recent Buildx releases (0.36+) no
+    # longer list --keep-storage in `prune --help` at all — it still works as a
+    # hidden deprecated alias, which is the dangerous part. Combined with the
+    # `|| true` below, the day Buildx drops the alias this prune would start
+    # failing SILENTLY and the runner's disk would fill unnoticed.
+    - name: Install buildx-prune script (runner disk GC)
+      become: true
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/runner-buildx-prune.sh
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          echo "== before =="; df -h /
+          docker buildx prune -af --reserved-space=10GB || true
+          echo "== after =="; df -h /
+
+    - name: Install buildx-prune systemd service
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/runner-buildx-prune.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Midday Buildx cache GC for the CI runner host
+          Wants=docker.service
+          After=docker.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/runner-buildx-prune.sh
+
+    - name: Install buildx-prune systemd timer
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/runner-buildx-prune.timer
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Run buildx-prune at midday
+
+          [Timer]
+          OnCalendar=*-*-* 15:20:00
+          RandomizedDelaySec=600
+          Persistent=false
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Enable + start buildx-prune timer
+      become: true
+      ansible.builtin.systemd:
+        name: runner-buildx-prune.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # A weekly-only reboot decision can miss its idle window (e.g. a runner busy
+    # with CI all day every day) and let reboot-required accumulate indefinitely.
+    # Fix the CADENCE, not the gate: a second, deliberately trivial timer that
+    # does nothing except take the first idle moment after a reboot became
+    # necessary. The apt upgrade itself stays weekly (it should not run hourly);
+    # only the reboot decision is retried. The safety property is unchanged —
+    # still never while a container is running.
+    - name: Install reboot-if-idle script (runner reboot retry)
+      become: true
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/runner-reboot-if-idle.sh
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ -f /var/run/reboot-required ] || exit 0
+          # Same gate as the weekly script: any running container means a CI job may
+          # be in flight. `docker ps -q` failing (daemon down mid-restart) must NOT
+          # read as "idle" -- treat an unusable daemon as busy and try again later.
+          if ! RUNNING="$(docker ps -q 2>/dev/null)"; then
+            echo "== docker not queryable -- treating as busy, retry next cycle =="
+            exit 0
+          fi
+          if [ -n "$RUNNING" ]; then
+            exit 0
+          fi
+          # Idempotent: if a reboot is already armed by this unit or by the weekly
+          # script, do not arm a second one.
+          for unit in runner-reboot-if-idle-reboot runner-os-maintenance-reboot; do
+            if systemctl is-active --quiet "${unit}.timer" 2>/dev/null; then
+              echo "== reboot already armed by ${unit} -- nothing to do =="
+              exit 0
+            fi
+          done
+          echo "== reboot-required and runner idle -- rebooting =="
+          systemd-run --on-active=1 --unit=runner-reboot-if-idle-reboot reboot
+
+    - name: Install reboot-if-idle systemd service
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/runner-reboot-if-idle.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Reboot the CI runner at the first idle moment after reboot-required
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/runner-reboot-if-idle.sh
+
+    - name: Install reboot-if-idle systemd timer
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/runner-reboot-if-idle.timer
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Retry the runner reboot hourly until an idle window is found
+
+          [Timer]
+          OnCalendar=hourly
+          RandomizedDelaySec=300
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Enable + start reboot-if-idle timer
+      become: true
+      ansible.builtin.systemd:
+        name: runner-reboot-if-idle.timer
+        enabled: true
+        state: started
+        daemon_reload: true
 
   post_tasks:
     # Operator break-glass root: append committed root pubkeys so that

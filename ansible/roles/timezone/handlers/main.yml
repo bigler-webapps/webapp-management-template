@@ -1,0 +1,20 @@
+---
+# server_health's probe/responder units read the system clock throughout their
+# lifetime (responder.service is long-running; probe.service is spawned per
+# timer tick but its own process may still have cached tzdata for its
+# duration). Restarting them after a real timezone change is cheap and
+# guarantees both immediately report in the new timezone rather than
+# waiting for their next natural restart. Only fires when the timezone
+# actually changed (task-level `notify`); a no-op localtime/timezone task
+# never triggers this. Requires the `timezone` role to run AFTER
+# `server_health` in site.yml's role lists, so the units already exist —
+# do not suppress a restart failure here, it would silently leave the
+# probe/responder reporting in the old timezone.
+- name: restart timezone-caching server_health services
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - server-health-probe.service
+    - server-health-responder.service

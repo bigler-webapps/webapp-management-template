@@ -70,7 +70,16 @@ services:
       - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
       - "--certificatesresolvers.myresolver.acme.storage=/acme.json"
       # Access logs to stdout so log collectors pick them up via Docker socket.
+      # JSON format (not CLF) so log fields survive structured parsing, e.g. once
+      # forwardedHeaders.trustedIPs is set and the client field starts carrying
+      # the end-user IP from X-Forwarded-For instead of the raw connection IP.
+      # fields.headers.defaultMode explicitly pinned to "drop" (Traefik's own
+      # default, but pinned rather than relied on implicitly) so a future Traefik
+      # upgrade or a later edit to this block cannot start logging
+      # Authorization/Cookie header values into your log collector by accident.
       - "--accesslog=true"
+      - "--accesslog.format=json"
+      - "--accesslog.fields.headers.defaultMode=drop"
       # Dashboard (secured below via CF Access + rate-limit + sec-headers)
       - "--api.dashboard=true"
     labels:

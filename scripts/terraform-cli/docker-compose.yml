@@ -1,0 +1,35 @@
+# Local developer wrapper for the pinned terraform CLI. NOT infrastructure:
+# nothing here reaches Cloudflare, and no CI workflow reads it.
+#
+# Deliberately NOT under `terraform/`: `terraform-apply.yml`'s trigger path
+# includes `terraform/**`, so a file living there — even a pure dev
+# convenience with no infrastructure content — arms a production apply on
+# every push that touches it (e.g. a routine image-version bump). This
+# location matches none of the repo's workflow path filters. See the
+# `hashicorp/terraform` packageRule in renovate.json, which keeps Renovate
+# from proposing exactly that kind of lone bump here.
+#
+# Usage from the repo root:
+#   docker compose -f scripts/terraform-cli/docker-compose.yml run --rm tf plan
+
+services:
+  tf:
+    # Pin this to whatever version your terraform-plan/terraform-apply CI
+    # actions actually run, so a local plan predicts the CI plan. If you bump
+    # one, bump the other in the same change.
+    image: hashicorp/terraform:1.9
+    env_file:
+      - ../../.env.local
+    volumes:
+      - ../../terraform:/workspace
+      - terraform-plugin-cache:/root/.terraform.d/plugin-cache
+    working_dir: /workspace
+    environment:
+      # Terraform Cloud Auth (Backend State)
+      - TF_TOKEN_app_terraform_io=${TF_CLOUD_TOKEN}
+      # Terraform Input Variables (lowercase TF_VAR_ prefix)
+      - TF_VAR_cloudflare_api_token=${CLOUDFLARE_API_TOKEN}
+      - TF_VAR_cloudflare_account_id=${CLOUDFLARE_ACCOUNT_ID}
+
+volumes:
+  terraform-plugin-cache:

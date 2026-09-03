@@ -1,0 +1,7 @@
+---
+# Host-level schedules for commands that must run inside an app's Compose
+# service. Hosts without declared jobs remain a no-op.
+app_cron_jobs: []
+
+app_cron_log_directory: /var/log/app-cron
+app_cron_log_retain_days: 14
