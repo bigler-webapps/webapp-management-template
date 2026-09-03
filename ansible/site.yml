@@ -62,6 +62,10 @@
     # target the probe/responder systemd units, which already exist by
     # this point.
     - timezone
+    # Host-level cron schedules for commands that must run inside an app's
+    # Compose service (e.g. a periodic management command). Hosts without
+    # declared jobs (app_cron_jobs: [] by default) remain a no-op.
+    - app_cron
 
   post_tasks:
     # Append committed root pubkeys. Uses exclusive=false so the bootstrap

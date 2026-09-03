@@ -1,0 +1,9 @@
+{#- cron.d parses a bare `%` in the command portion (everything after the 6th
+   field) as a literal newline, splitting the line and feeding the remainder
+   to the command's stdin -- e.g. an unescaped `date +%F` would silently
+   truncate to `date +` with `F` piped to stdin. Escape every `%` in each
+   field that lands in the command portion BEFORE shell-quoting it, so a
+   future job declaring a `%`-bearing command doesn't break at cron's own
+   parsing layer. #}
+# Managed by the app_cron Ansible role — do not edit by hand
+{{ app_cron_job.schedule }} root cd {{ app_cron_job.project_dir | replace('%', '\%') | quote }} && {{ app_cron_flock_path.stdout | quote }} -n {{ ('/var/lock/app-cron-' ~ app_cron_job.name ~ '.lock') | replace('%', '\%') | quote }} {{ app_cron_docker_path.stdout | quote }} compose exec -T {{ app_cron_job.service | replace('%', '\%') | quote }} sh -c {{ app_cron_job.command | replace('%', '\%') | quote }} >> {{ (app_cron_log_directory ~ '/' ~ app_cron_job.name ~ '.log') | replace('%', '\%') | quote }} 2>&1

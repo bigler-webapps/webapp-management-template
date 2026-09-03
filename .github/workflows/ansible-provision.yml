@@ -23,6 +23,11 @@ on:
         required: false
         type: string
         default: ""
+      check_mode:
+        description: "Dry run: pass --check --diff to ansible-playbook. Changes nothing on the host."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -109,6 +114,9 @@ jobs:
           # LIMIT_TARGET — see S20 hardening notes in
           # provision-server.yml and sync-ssh-access.yml.
           EXTRA_VARS: ${{ inputs.extra_vars }}
+          # Opt-in dry-run flag. Passed through env rather than interpolated
+          # into the shell body, following the S20 input-handling pattern.
+          CHECK_MODE: ${{ inputs.check_mode }}
           # Tailscale auth-key consumed by the biglerconsult.infra.tailscale
           # role via `lookup('env', 'TAILSCALE_AUTH_KEY')` in group_vars.
           # Only the `staging` environment is expected to have this secret
@@ -126,11 +134,19 @@ jobs:
           # tooling install). This block only assembles the optional
           # --extra-vars argv pair.
           EXTRA_VARS_ARG=()
+          CHECK_ARG=()
           if [ -n "${EXTRA_VARS}" ]; then
             EXTRA_VARS_ARG=( --extra-vars "$EXTRA_VARS" )
+          fi
+          if [ "${CHECK_MODE}" = "true" ]; then
+            CHECK_ARG=( --check --diff )
+            echo "### 🔍 Dry run (--check --diff)" >> "$GITHUB_STEP_SUMMARY"
+            echo "Nothing on the host was changed by this run." >> "$GITHUB_STEP_SUMMARY"
+            echo "Some modules (anything gated on \`not ansible_check_mode\`, or a \`command\`/\`shell\` task that always reports changed) behave differently under --check — read this as a configuration-drift report, not a guarantee that the real run will succeed." >> "$GITHUB_STEP_SUMMARY"
           fi
           ansible-playbook site.yml \
             --inventory inventory/hosts.yml \
             --limit "$LIMIT_TARGET" \
+            "${CHECK_ARG[@]}" \
             "${EXTRA_VARS_ARG[@]}" \
             --private-key ~/.ssh/id_ansible
