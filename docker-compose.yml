@@ -145,7 +145,7 @@ services:
 
   # Socket Proxy for Traefik (read-only docker.sock exposure).
   docker-socket-proxy-traefik:
-    image: tecnativa/docker-socket-proxy:v0.4.2
+    image: tecnativa/docker-socket-proxy:v0.5.0
     container_name: docker-socket-proxy-traefik
     profiles: ["main", "staging", "monitoring"]
     restart: unless-stopped
@@ -163,7 +163,7 @@ services:
   # autoheal needs CONTAINERS=1 + POST=1 (POST /containers/{id}/restart).
   # The proxy restricts the rest of the Docker API surface.
   docker-socket-proxy-autoheal:
-    image: tecnativa/docker-socket-proxy:v0.4.2
+    image: tecnativa/docker-socket-proxy:v0.5.0
     container_name: docker-socket-proxy-autoheal
     profiles: ["main", "staging"]
     restart: unless-stopped
@@ -217,7 +217,7 @@ services:
   #   - Socket-proxy gating: CONTAINERS=1 + LOGS=1 only (no write access)
   #   - S33: pin Dockerfile.relay digest once first build digest is known
   docker-socket-proxy-relay:
-    image: tecnativa/docker-socket-proxy:v0.4.2@sha256:bd2241b3bec83abcff25927a0a7ae518e0c5bef624b3cc247dcb31e68b53f417
+    image: tecnativa/docker-socket-proxy:v0.5.0@sha256:753044cb0851ce53ab44c2504872ff02ae37be9c294fa8abea3754074e61eab4
     container_name: docker-socket-proxy-relay
     profiles: ["staging", "main"]
     restart: unless-stopped
