@@ -5,6 +5,14 @@ on:
     paths:
       - 'terraform/**'
       - '.github/workflows/terraform-*.yml'
+  # Manual plan preview. If your branching model has no PR path that reaches this
+  # repo for a given change (e.g. no feature branches, or previewing a plan for a
+  # committed-but-unpushed state via a throwaway ref), the `pull_request` trigger
+  # above is unreachable — this is the only way to get a plan before an
+  # apply-on-push fires. Read-only: the underlying action's PR-comment step only
+  # runs when triggered by `pull_request`, so a dispatch run just writes the plan
+  # to the job log.
+  workflow_dispatch:
 
 permissions:
   contents: read
