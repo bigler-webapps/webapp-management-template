@@ -65,6 +65,11 @@ services:
       # Trust X-Forwarded-* only from the traefik_proxy bridge subnet (internal hops).
       # Only set on websecure; web entrypoint only redirects to websecure and never serves middleware-protected routes.
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=192.168.220.0/24"
+      # v3 default readTimeout is 60s (covers the whole request incl. body), which cuts
+      # off any upload/request needing longer than a minute. Raise it if your app serves
+      # large uploads or long-running requests; writeTimeout/idleTimeout and the web
+      # entrypoint are untouched.
+      # - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=900s"
       # SSL via Let's Encrypt TLS-ALPN challenge
       - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
       - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
