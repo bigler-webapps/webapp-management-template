@@ -1,0 +1,10 @@
+[Unit]
+Description=Run server-health probe every {{ server_health_probe_interval_sec }}s
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec={{ server_health_probe_interval_sec }}
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

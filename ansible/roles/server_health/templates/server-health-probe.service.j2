@@ -1,0 +1,22 @@
+[Unit]
+Description=server-health probe - one-shot disk/mem/swap sample
+After=network.target
+
+[Service]
+Type=oneshot
+User={{ server_health_user }}
+Group={{ server_health_user }}
+ExecStart=/usr/bin/python3 {{ server_health_install_dir }}/probe.py
+# Sandboxing: the probe only needs to read /proc + statvfs and write
+# under server_health_state_dir — deny everything else.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ server_health_state_dir }}
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true

@@ -1,0 +1,110 @@
+---
+# server_health — disk + memory threshold alerts on every server.
+#
+# Mechanism: an ordinary HTTP monitor (e.g. Uptime Kuma) per (host, metric)
+# polls this host's responder over the tailnet — no push monitor, no
+# secret/token involved anywhere in this role.
+#
+# Override per host via ansible/host_vars/<host>.yml, same pattern as the
+# swap role.
+
+# Disk: the ALARM still fires on a SINGLE sample -- a full disk cannot wait
+# for confirmation. But "disk doesn't oscillate" is not universally true: a
+# host whose usage sits pinned near the threshold can cross it repeatedly
+# over hours or days, and a single-sample all-clear turns one real, sustained
+# breach into many separate DOWN/UP transitions on whatever's consuming this
+# role's status. Recovery is now debounced; see
+# server_health_disk_recovery_sustained_samples below.
+# Default is 90% rather than a lower value: a production host's baseline
+# disk usage right after routine cleanup can already sit close to 80%,
+# which would leave little headroom and alert almost immediately. Tune
+# this per fleet once you know your own hosts' steady-state usage.
+server_health_disk_threshold_pct: 90
+server_health_disk_mounts:
+  - /
+
+# How many CONSECUTIVE under-threshold probe samples (server_health_probe_interval_sec
+# apart) are required before a disk breach clears. Matches
+# disk_trend_sustained_samples' existing order of magnitude below: enough to
+# absorb one noisy sample right at the boundary without meaningfully delaying
+# a genuine recovery report. Tune against your own fleet's measured probe
+# interval and how fast a host's disk usage actually moves.
+server_health_disk_recovery_sustained_samples: 3
+
+# Predictive disk alerting estimates free-space change over a full calendar
+# day by default. A day-long window absorbs one heavy deploy afternoon into
+# its own average while a fill that persists day over day remains visible.
+# This trend is for a slow, multi-day fill; a fast/urgent drop is still
+# caught by disk_threshold_pct above, unaffected by the trend guard. Shorten
+# this if your fleet needs faster trend detection than a daily cadence.
+server_health_disk_trend_window_sec: 86400
+server_health_disk_days_to_full_min: 3
+server_health_disk_trend_sustained_samples: 3
+
+# A projected breach is display-only while a mount's free space is still this
+# many PERCENTAGE POINTS above where the absolute threshold would itself
+# fire -- e.g. at threshold 90 and margin 5, the trend is vetoed while
+# used% < 85% (free% > 15%), and can only breach once usage is already
+# within 5 points of the absolute cutoff. Derived per-mount from
+# disk_threshold_pct and each mount's OWN total size, not a fixed byte
+# count: a single global byte floor tuned for one host's disk can sit ABOVE
+# a larger host's own absolute-threshold trip point and neuter the trend
+# there entirely -- across a fleet of differently-sized disks, a fixed-byte
+# floor tuned for the smallest one would never even apply to the largest. A
+# percentage MARGIN scales automatically with each host's own disk size; the
+# actual runtime comparison stays in absolute bytes (usable headroom is an
+# absolute capacity, not a fixed fraction), it is just the CONSTANT that is
+# now expressed proportionally instead of as one global number someone
+# would otherwise have to re-tune per host. Hosts that need no trend at all
+# can opt out entirely with disk_days_to_full_min: null (e.g. a host whose
+# own scheduled maintenance resets make its sawtooth projection meaningless)
+# -- a separate, coarser knob from this margin.
+server_health_disk_trend_floor_margin_pct: 5
+
+# Diagnostic-only, bounded attribution for a disk incident. Docker/containerd
+# are the known large image-store roots; missing roots simply report no entries.
+server_health_growth_watch_dirs:
+  - /var/lib/docker
+  - /var/lib/containerd
+
+# Inodes can independently make a filesystem unwritable. Match the disk
+# threshold and keep this single-sample metric deliberately simple.
+server_health_inode_threshold_pct: 90
+
+# Memory: REQUIRE a sustained breach (N consecutive probe samples) before
+# reporting down — a build phase on staging/the runner legitimately touches
+# the ceiling for a minute; alerting on that is worse than no alert.
+server_health_mem_available_min_pct: 10
+server_health_mem_sustained_samples: 3
+
+# Swap: display-only by default, not an alerting metric. Swap usage is a
+# high-water mark of past memory pressure that decays only on swapoff/reboot
+# -- on a host that rebuilds many Docker images per deploy it sits permanently
+# breached after the first large build, which makes a threshold meaningless
+# (raising it only postpones the same false alarm). `null` disables the
+# threshold: the probe still reports `value_pct` (so a dashboard keeps
+# showing the number) but never marks swap unhealthy on that basis alone --
+# the freshness/staleness contract ("no data must never look healthy") is
+# untouched. Real memory pressure is already covered by
+# server_health_mem_available_min_pct above. Set a real percentage here if
+# your fleet wants swap alerting instead.
+server_health_swap_max_pct: null
+server_health_swap_sustained_samples: 3
+
+server_health_probe_interval_sec: 60
+
+# Bound to the host's tailnet interface only — never public, no reverse
+# proxy, no terraform. `default('', true)` deliberately does NOT fall back
+# to a usable-looking address: an empty listen_addr fails the role's own
+# assert task in tasks/main.yml instead of silently binding the responder to
+# loopback, which would cost a rollout its only failure signal (a refused
+# connection with no explanation). A host whose tailnet interface is not
+# named `tailscale0` (e.g. a dedicated mgmt daemon on a different interface)
+# must override this in its own group_vars/host_vars — see
+# ansible/group_vars/runners.yml for the pattern.
+server_health_listen_addr: "{{ ansible_tailscale0.ipv4.address | default('', true) }}"
+server_health_listen_port: 9110
+
+server_health_state_dir: /var/lib/server-health
+server_health_install_dir: /opt/server-health
+server_health_user: server-health
