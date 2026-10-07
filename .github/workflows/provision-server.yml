@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Provision base server
-        uses: bigler-webapps/workflow-templates/.github/actions/provision-server@v1.0.0
+        uses: bigler-webapps/workflow-templates/.github/actions/provision-server@v2.13.0
         with:
           target: ${{ inputs.target }}
           target_host: ${{ inputs.server_ip }}
