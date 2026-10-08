@@ -37,10 +37,10 @@ jobs:
     steps:
       - name: Checkout
         # TODO: pin to a specific SHA once you tag a release of this template
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
 
       - name: Provision base server
-        uses: bigler-webapps/workflow-templates/.github/actions/provision-server@v1.0.0
+        uses: bigler-webapps/workflow-templates/.github/actions/provision-server@v1.11.1
         with:
           target: ${{ inputs.target }}
           target_host: ${{ inputs.server_ip }}
