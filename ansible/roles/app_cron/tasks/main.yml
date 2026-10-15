@@ -1,0 +1,117 @@
+---
+# Reject malformed job declarations before anything is rendered: a bare
+# name lets `dest: /etc/cron.d/{{ name }}` traverse outside that directory
+# (e.g. `../anacrontab`) or collide with an unmanaged file, and a stray
+# newline in any field would survive shell-quoting and become a second,
+# unintended line in a root-owned cron.d file. host_vars content is
+# operator-declared, not attacker input, but this is a cheap, deterministic
+# guard against both a typo and a theoretical future non-operator source
+# for this list.
+- name: Validate app_cron_jobs entries
+  ansible.builtin.assert:
+    that:
+      - app_cron_job.name is match('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')
+      - "'\n' not in app_cron_job.project_dir"
+      - "'\n' not in app_cron_job.service"
+      - "'\n' not in app_cron_job.command"
+      - "'\n' not in app_cron_job.schedule"
+    fail_msg: >-
+      app_cron_jobs entry {{ app_cron_job.name | default('<unnamed>') }} is invalid: name must
+      match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ and no field may contain a newline.
+  loop: "{{ app_cron_jobs }}"
+  loop_control:
+    loop_var: app_cron_job
+    label: "{{ app_cron_job.name | default('<unnamed>') }}"
+
+# Resolve these on the managed host rather than relying on cron's deliberately
+# small PATH. A missing executable is a failed provision, not a silently dead
+# schedule. check_mode: false — these are read-only discovery commands, not
+# state changes, and skipping them under --check leaves app_cron_flock_path/
+# app_cron_docker_path undefined, which breaks a --check --diff dry run when
+# it tries to render the cron.d template.
+- name: Resolve flock executable path
+  ansible.builtin.command: which flock
+  register: app_cron_flock_path
+  changed_when: false
+  check_mode: false
+  failed_when: app_cron_flock_path.rc != 0
+  when: app_cron_jobs | length > 0
+
+- name: Resolve docker executable path
+  ansible.builtin.command: which docker
+  register: app_cron_docker_path
+  changed_when: false
+  check_mode: false
+  failed_when: app_cron_docker_path.rc != 0
+  when: app_cron_jobs | length > 0
+
+- name: Create app-cron log directory
+  ansible.builtin.file:
+    path: "{{ app_cron_log_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: app_cron_jobs | length > 0
+
+# Guards the other half of the same collision risk the name-pattern check
+# above addresses: a job name that happens to match an existing, unrelated
+# /etc/cron.d file (not one this role wrote) must not be silently overwritten.
+- name: Refuse to overwrite a pre-existing unmanaged /etc/cron.d file
+  ansible.builtin.shell: |
+    set -e
+    f="/etc/cron.d/{{ app_cron_job.name }}"
+    if [ -e "$f" ] && ! grep -q '^# Managed by the app_cron Ansible role' "$f"; then
+      echo "REFUSING: $f already exists and is not managed by the app_cron role" >&2
+      exit 1
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false
+  check_mode: false
+  loop: "{{ app_cron_jobs }}"
+  loop_control:
+    loop_var: app_cron_job
+    label: "{{ app_cron_job.name }}"
+
+- name: Install app cron jobs
+  ansible.builtin.template:
+    src: cron.d.j2
+    dest: "/etc/cron.d/{{ app_cron_job.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ app_cron_jobs }}"
+  loop_control:
+    loop_var: app_cron_job
+    label: "{{ app_cron_job.name }}"
+
+# This deliberately runs with an empty job list too: removing a declaration
+# from host_vars removes its corresponding IaC-managed cron file on the next
+# provision run.
+- name: Find app_cron-managed cron files
+  ansible.builtin.find:
+    paths: /etc/cron.d
+    file_type: file
+    recurse: false
+    contains: '^# Managed by the app_cron Ansible role .*$'
+    use_regex: true
+  register: app_cron_managed_files
+
+- name: Remove no-longer-declared app cron jobs
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ app_cron_managed_files.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: (item.path | basename) not in (app_cron_jobs | map(attribute='name') | list)
+
+- name: Install app-cron logrotate policy
+  ansible.builtin.template:
+    src: logrotate.j2
+    dest: /etc/logrotate.d/app-cron
+    owner: root
+    group: root
+    mode: "0644"
+  when: app_cron_jobs | length > 0

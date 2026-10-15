@@ -3,8 +3,13 @@
 # Synced to Kuma via `Sync Uptime Kuma Notifications` workflow.
 #
 # Adapt to your team's channels. Notifications marked `default: true` are
-# applied to ALL existing monitors AND auto-applied to every new monitor →
-# app-level monitor.yml files don't need to reference notifications.
+# applied by KUMA_SYNC (the `sync-kuma-notifications` action's own code), NOT
+# by Kuma itself → app-level monitor.yml files don't need to reference
+# notification ids, but the mechanism resolving/attaching them is this repo's
+# tooling, not a native Kuma behavior. (Corrected here after a real incident:
+# assuming the Kuma API auto-applies `default: true` the way its UI does left a
+# batch of monitors with no alert channel at all for hours — the API always
+# sends an explicit `notificationIDList`, empty when nothing is passed.)
 #
 # Env-var expansion (${FOO}) happens at sync time from the secrets passed
 # into the composite action.
@@ -19,7 +24,23 @@
 #         discordUsername: "Kuma"
 #         discordWebhookUrl: "${DISCORD_WEBHOOK_URL}"
 #
-# Other supported types include: telegram, slack, smtp, ntfy, gotify, …
+# Example: SMTP / email (e.g. via an HTTP-blocked-SMTP-friendly provider like
+# Resend on their alternate port; adjust host/port/secure for your provider):
+#
+#   notifications:
+#     - name: alert-email
+#       type: smtp
+#       default: false   # attach explicitly per-monitor; see monitoring.extra entries
+#       config:
+#         smtpHost: "${SMTP_HOST}"
+#         smtpPort: 2465        # literal, not "${...}" — Kuma validates this numerically
+#         smtpSecure: true      # literal boolean; must match smtpPort's TLS mode
+#         smtpUsername: "${SMTP_USERNAME}"
+#         smtpPassword: "${SMTP_PASSWORD}"
+#         smtpFrom: "noreply@<your-domain.example.com>"
+#         smtpTo: "${SMTP_TO}"
+#
+# Other supported types include: telegram, slack, ntfy, gotify, …
 # See https://uptime-kuma-api.readthedocs.io for the parameter names per type.
 
 notifications:

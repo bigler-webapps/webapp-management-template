@@ -65,12 +65,26 @@ services:
       # Trust X-Forwarded-* only from the traefik_proxy bridge subnet (internal hops).
       # Only set on websecure; web entrypoint only redirects to websecure and never serves middleware-protected routes.
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=192.168.220.0/24"
+      # v3 default readTimeout is 60s (covers the whole request incl. body), which cuts
+      # off any upload/request needing longer than a minute. Raise it if your app serves
+      # large uploads or long-running requests; writeTimeout/idleTimeout and the web
+      # entrypoint are untouched.
+      # - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=900s"
       # SSL via Let's Encrypt TLS-ALPN challenge
       - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
       - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
       - "--certificatesresolvers.myresolver.acme.storage=/acme.json"
       # Access logs to stdout so log collectors pick them up via Docker socket.
+      # JSON format (not CLF) so log fields survive structured parsing, e.g. once
+      # forwardedHeaders.trustedIPs is set and the client field starts carrying
+      # the end-user IP from X-Forwarded-For instead of the raw connection IP.
+      # fields.headers.defaultMode explicitly pinned to "drop" (Traefik's own
+      # default, but pinned rather than relied on implicitly) so a future Traefik
+      # upgrade or a later edit to this block cannot start logging
+      # Authorization/Cookie header values into your log collector by accident.
       - "--accesslog=true"
+      - "--accesslog.format=json"
+      - "--accesslog.fields.headers.defaultMode=drop"
       # Dashboard (secured below via CF Access + rate-limit + sec-headers)
       - "--api.dashboard=true"
     labels:
@@ -145,7 +159,7 @@ services:
 
   # Socket Proxy for Traefik (read-only docker.sock exposure).
   docker-socket-proxy-traefik:
-    image: tecnativa/docker-socket-proxy:v0.4.2
+    image: tecnativa/docker-socket-proxy:v0.5.0
     container_name: docker-socket-proxy-traefik
     profiles: ["main", "staging", "monitoring"]
     restart: unless-stopped
@@ -163,7 +177,7 @@ services:
   # autoheal needs CONTAINERS=1 + POST=1 (POST /containers/{id}/restart).
   # The proxy restricts the rest of the Docker API surface.
   docker-socket-proxy-autoheal:
-    image: tecnativa/docker-socket-proxy:v0.4.2
+    image: tecnativa/docker-socket-proxy:v0.5.0
     container_name: docker-socket-proxy-autoheal
     profiles: ["main", "staging"]
     restart: unless-stopped
@@ -217,7 +231,7 @@ services:
   #   - Socket-proxy gating: CONTAINERS=1 + LOGS=1 only (no write access)
   #   - S33: pin Dockerfile.relay digest once first build digest is known
   docker-socket-proxy-relay:
-    image: tecnativa/docker-socket-proxy:v0.4.2@sha256:bd2241b3bec83abcff25927a0a7ae518e0c5bef624b3cc247dcb31e68b53f417
+    image: tecnativa/docker-socket-proxy:v0.5.0@sha256:753044cb0851ce53ab44c2504872ff02ae37be9c294fa8abea3754074e61eab4
     container_name: docker-socket-proxy-relay
     profiles: ["staging", "main"]
     restart: unless-stopped

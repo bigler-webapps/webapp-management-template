@@ -93,3 +93,21 @@ http:
     #     sourceRange:
     #       - "100.64.0.0/10"   # Tailscale CGNAT range
     #       # - "10.10.0.0/24"  # Example WireGuard subnet
+
+    # compress — JSON-only response compression at the edge. Uncomment and add
+    # `compress@file` to a router's middleware chain if your app has large JSON
+    # responses worth compressing. `includedContentTypes` is deliberately
+    # restricted to `application/json`, not left unset: compression + a secret +
+    # attacker-influenced content in the SAME response is BREACH, and the classic
+    # target is an HTML page carrying a CSRF/session token. Before widening
+    # `includedContentTypes` (e.g. to `text/html`) or attaching this to a router
+    # that also serves HTML, re-derive that no token/secret ever appears in a
+    # reflected JSON or HTML body on that route — this middleware does not
+    # enforce that for you. `minResponseBodyBytes` is a performance knob (below
+    # it, compression overhead costs more than it saves), not a security
+    # boundary — do not rely on a response staying under that size.
+    # compress:
+    #   compress:
+    #     includedContentTypes:
+    #       - "application/json"
+    #     minResponseBodyBytes: 1024

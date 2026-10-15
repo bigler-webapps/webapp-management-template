@@ -1,0 +1,16 @@
+{
+  "disk_threshold_pct": {{ server_health_disk_threshold_pct }},
+  "disk_recovery_sustained_samples": {{ server_health_disk_recovery_sustained_samples }},
+  "disk_mounts": {{ server_health_disk_mounts | to_json }},
+  "disk_trend_window_sec": {{ server_health_disk_trend_window_sec }},
+  "disk_days_to_full_min": {{ server_health_disk_days_to_full_min | to_json }},
+  "disk_trend_sustained_samples": {{ server_health_disk_trend_sustained_samples }},
+  "disk_trend_floor_margin_pct": {{ server_health_disk_trend_floor_margin_pct | to_json }},
+  "growth_watch_dirs": {{ server_health_growth_watch_dirs | to_json }},
+  "inode_threshold_pct": {{ server_health_inode_threshold_pct }},
+  "mem_available_min_pct": {{ server_health_mem_available_min_pct }},
+  "mem_sustained_samples": {{ server_health_mem_sustained_samples }},
+  "swap_max_pct": {{ server_health_swap_max_pct | to_json }},
+  "swap_sustained_samples": {{ server_health_swap_sustained_samples }},
+  "state_dir": "{{ server_health_state_dir }}"
+}

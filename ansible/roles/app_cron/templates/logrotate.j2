@@ -1,0 +1,9 @@
+{{ app_cron_log_directory }}/*.log {
+    daily
+    rotate {{ app_cron_log_retain_days }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0644 root root
+}

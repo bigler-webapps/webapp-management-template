@@ -1,0 +1,97 @@
+---
+# Provision a swap file. Idempotent — re-running on an already-swapped
+# host is a no-op (size mismatch triggers re-creation).
+#
+# Why a swap-file (not LVM partition): cloud VMs are typically thin-provisioned
+# without a separate swap partition. /swapfile lives on the root filesystem,
+# which keeps the role provider-agnostic (works the same across cloud providers).
+#
+# Operational reason this role exists: staging-class servers (~4 GB RAM) OOM
+# during parallel Docker builds (gradle + vite + pnpm). Without swap, the OOM
+# killer terminates random processes mid-build, leaving the deploy in an
+# undefined state. With swap the kernel can survive the spike at the cost of
+# slightly slower builds.
+- name: Provision swap (requires root)
+  become: true
+  when: swap_enabled | bool
+  block:
+    - name: Check whether swap file already exists at the configured size
+      ansible.builtin.stat:
+        path: "{{ swap_path }}"
+      register: swap_file_stat
+
+    - name: Disable existing swap-file when it has the wrong size
+      ansible.builtin.command: "swapoff {{ swap_path }}"
+      when:
+        - swap_file_stat.stat.exists
+        - swap_file_stat.stat.size != (swap_size_mb | int * 1024 * 1024)
+      register: swap_off
+      changed_when: swap_off.rc == 0
+      failed_when:
+        - swap_off.rc != 0
+        - "'Invalid argument' not in (swap_off.stderr | default(''))"  # not swapped on yet → benign
+
+    - name: Remove out-of-sized swap file
+      ansible.builtin.file:
+        path: "{{ swap_path }}"
+        state: absent
+      when:
+        - swap_file_stat.stat.exists
+        - swap_file_stat.stat.size != (swap_size_mb | int * 1024 * 1024)
+
+    - name: Allocate swap file
+      ansible.builtin.command: "fallocate -l {{ swap_size_mb }}M {{ swap_path }}"
+      args:
+        creates: "{{ swap_path }}"
+
+    - name: Restrict swap-file permissions
+      ansible.builtin.file:
+        path: "{{ swap_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Initialise swap area
+      ansible.builtin.command: "mkswap {{ swap_path }}"
+      register: mkswap_run
+      changed_when: "'Setting up swapspace' in (mkswap_run.stdout | default(''))"
+      # mkswap is safe to re-run on a properly-initialised swap-file (no-op);
+      # we suppress the failure if swapon already activated it.
+      failed_when:
+        - mkswap_run.rc != 0
+        - "'is mounted' not in (mkswap_run.stderr | default(''))"
+
+    - name: Read current swap state
+      ansible.builtin.command: "swapon --show=NAME --noheadings"
+      register: swapon_show
+      changed_when: false
+
+    - name: Activate swap file (if not already active)
+      ansible.builtin.command: "swapon {{ swap_path }}"
+      when: swap_path not in (swapon_show.stdout_lines | default([]))
+
+    - name: Persist swap mount in /etc/fstab
+      ansible.posix.mount:
+        path: none
+        src: "{{ swap_path }}"
+        fstype: swap
+        opts: sw
+        passno: "0"
+        dump: "0"
+        state: present
+
+    - name: Tune vm.swappiness (low → prefer RAM)
+      ansible.posix.sysctl:
+        name: vm.swappiness
+        value: "{{ swap_swappiness }}"
+        state: present
+        sysctl_file: /etc/sysctl.d/99-swap-tuning.conf
+        reload: true
+
+    - name: Tune vm.vfs_cache_pressure (less aggressive cache eviction)
+      ansible.posix.sysctl:
+        name: vm.vfs_cache_pressure
+        value: "{{ swap_vfs_cache_pressure }}"
+        state: present
+        sysctl_file: /etc/sysctl.d/99-swap-tuning.conf
+        reload: true

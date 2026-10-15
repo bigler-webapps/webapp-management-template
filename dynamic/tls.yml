@@ -1,0 +1,7 @@
+#traefik/dynamic/tls.yml
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: true

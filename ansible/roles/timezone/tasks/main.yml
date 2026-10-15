@@ -1,0 +1,30 @@
+---
+# Declare the host timezone instead of inheriting it. Applies to EVERY
+# managed host (this role is added, ungated, to both the `all:!runners` play
+# and the `runners` play in site.yml) — not conditioned on a host var, so a
+# future host cannot silently reintroduce drift.
+#
+# Plain ansible.builtin modules only (no community.general dependency to
+# add): the standard Debian/Ubuntu mechanism is an /etc/localtime symlink
+# into the system zoneinfo database plus a matching /etc/timezone file.
+# Both tasks are naturally idempotent — on a host already at Etc/UTC they
+# report unchanged.
+- name: Ensure /etc/localtime points at {{ managed_timezone }}
+  become: true
+  ansible.builtin.file:
+    src: "/usr/share/zoneinfo/{{ managed_timezone }}"
+    dest: /etc/localtime
+    state: link
+    force: true
+    follow: false
+  notify: restart timezone-caching server_health services
+
+- name: Ensure /etc/timezone matches {{ managed_timezone }} (Debian/Ubuntu)
+  become: true
+  ansible.builtin.copy:
+    content: "{{ managed_timezone }}\n"
+    dest: /etc/timezone
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart timezone-caching server_health services

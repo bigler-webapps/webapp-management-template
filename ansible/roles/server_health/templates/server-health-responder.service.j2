@@ -1,0 +1,28 @@
+[Unit]
+Description=server-health responder - serves /health/<metric> over the tailnet
+After=network.target
+
+[Service]
+Type=simple
+User={{ server_health_user }}
+Group={{ server_health_user }}
+ExecStart=/usr/bin/python3 {{ server_health_install_dir }}/responder.py --status-path {{ server_health_state_dir }}/status.json --listen-addr {{ server_health_listen_addr }} --listen-port {{ server_health_listen_port }} --probe-interval-sec {{ server_health_probe_interval_sec }}
+Restart=on-failure
+RestartSec=5
+# Sandboxing: the responder only needs to READ status.json and bind one
+# tailnet-only TCP port — deny everything else. ReadOnlyPaths (not
+# ReadWritePaths, unlike the probe unit): this process never writes.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths={{ server_health_state_dir }}
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
