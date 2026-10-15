@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Run maintenance
-        uses: bigler-webapps/workflow-templates/.github/actions/maintenance@v2.0.3
+        uses: bigler-webapps/workflow-templates/.github/actions/maintenance@v2.13.0
         with:
           target: ${{ inputs.target || 'production' }}
           ssh_host: ${{ secrets.SSH_HOST }}
