@@ -17,6 +17,16 @@
         "hashicorp/terraform"
       ],
       "enabled": false
+    },
+    {
+      "description": "The Ansible controller job in ansible-provision.yml runs ansible-core>=2.16,<2.18, which does not support a Python 3.14 controller (3.10 to 3.12 only). Hold its Python version; moving it is a deliberate change together with the ansible-core constraint. Every other job's python-version is bumped normally.",
+      "matchFileNames": [
+        ".github/workflows/ansible-provision.yml"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
+      "enabled": false
     }
   ]
 }

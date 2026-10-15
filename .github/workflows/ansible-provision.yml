@@ -5,11 +5,11 @@ name: Ansible Provision
 # `site.yml` is idempotent — running it against an existing server applies
 # any new package / sysctl / config drift and is a safe no-op on
 # already-applied state. This workflow therefore covers both fresh-host
-# bootstrap AND incremental updates; the legacy `update-server.yml` workflow
-# (deprecated 2026-05-24) is superseded by re-running this workflow.
-#
-# See SECURITY_FINDINGS.md S182 for the deprecation rationale (root-SSH
-# removal from the `tag:ci-deploy` ACL).
+# bootstrap AND incremental updates. It connects Tailscale-SSH keyless as the
+# `provision` user (tailnet ACL: tag:ci-provision -> tag:server-*); there is no
+# root SSH key in CI. The FIRST run against a brand-new host (before it is on
+# the tailnet) is an operator step with `-e ansible_user=root`, see
+# ansible/host_vars/example-prod.yml.example.
 
 on:
   workflow_dispatch:
@@ -23,6 +23,11 @@ on:
         required: false
         type: string
         default: ""
+      check_mode:
+        description: "Dry run: pass --check --diff to ansible-playbook. Changes nothing on the host."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -82,18 +87,52 @@ jobs:
       - name: Install collection requirements
         run: ansible-galaxy collection install -r requirements.yml
 
-      - name: Write SSH key
+      # Fail fast with a clear message if the dedicated provisioning OAuth
+      # secrets are missing in this environment.
+      - name: Validate provision OAuth secrets
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY_ROOT }}
+          CID: ${{ secrets.TS_PROVISION_OAUTH_CLIENT_ID }}
+          CSEC: ${{ secrets.TS_PROVISION_OAUTH_SECRET }}
         run: |
           set -euo pipefail
-          if [ -z "${SSH_PRIVATE_KEY}" ]; then
-            echo "❌ Secret SSH_PRIVATE_KEY_ROOT not set in environment '${{ inputs.target }}'."
+          if [ -z "${CID}" ] || [ -z "${CSEC}" ]; then
+            echo "❌ TS_PROVISION_OAUTH_CLIENT_ID/SECRET not set in environment '${{ inputs.target }}'."
             exit 1
           fi
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_ansible
-          chmod 600 ~/.ssh/id_ansible
+          echo "✅ Provision OAuth secrets present."
+
+      # The runner joins the tailnet so Ansible can resolve MagicDNS names and
+      # reach servers via Tailscale SSH. Dedicated provisioning OAuth client
+      # (tag:ci-provision only), isolated from the tag:ci-deploy client used by
+      # app deploys.
+      - name: Join Tailnet
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade  # v3.2.3
+        with:
+          oauth-client-id: ${{ secrets.TS_PROVISION_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_PROVISION_OAUTH_SECRET }}
+          tags: tag:ci-provision
+          version: "1.98.4"
+          # Explicit valid DNS-label hostname: the runner's default hostname can
+          # be an invalid label and make `tailscale up` flaky. run_id is numeric.
+          hostname: gh-ci-provision-${{ github.run_id }}
+
+      # Surface a MagicDNS routing problem early instead of as an opaque SSH
+      # timeout inside Ansible.
+      - name: Verify MagicDNS routing
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            if resolvectl domain | grep -q 'ts.net'; then
+              echo "✅ MagicDNS domain routed via systemd-resolved"
+              exit 0
+            fi
+            echo "⏳ Waiting for MagicDNS routing ($i/5)..."
+            sleep 2
+          done
+          echo "❌ MagicDNS domain not found in resolvectl domain output after 10 s"
+          resolvectl domain || true
+          resolvectl dns   || true
+          exit 1
 
       - name: Run Ansible playbook
         env:
@@ -106,9 +145,10 @@ jobs:
           # Workflow-input passthrough for one-shot ansible extra-vars
           # (e.g. `tailscale_force_up=true` after changing tailscale-up
           # flags). Same env-var-quoting + regex validation pattern as
-          # LIMIT_TARGET — see S20 hardening notes in
-          # provision-server.yml and sync-ssh-access.yml.
+          # LIMIT_TARGET (S20 hardening).
           EXTRA_VARS: ${{ inputs.extra_vars }}
+          # Opt-in dry-run flag, passed through env (S20 input-handling pattern).
+          CHECK_MODE: ${{ inputs.check_mode }}
           # Tailscale auth-key consumed by the biglerconsult.infra.tailscale
           # role via `lookup('env', 'TAILSCALE_AUTH_KEY')` in group_vars.
           # Only the `staging` environment is expected to have this secret
@@ -119,6 +159,17 @@ jobs:
           # environments (e.g. main-prod) without intent; doing so would
           # auto-register that host into the same tailnet on the next run.
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          # Runner-host secrets - only populated in the `runners` GitHub
+          # Environment; empty for every other target, which is the safe
+          # fallback (the runner play only runs when --limit includes the
+          # `runners` group). `runs-on` stays GitHub-hosted to avoid a
+          # bootstrapping circularity on the first runner provision.
+          TAILSCALE_MGMT_AUTH_KEY: ${{ secrets.TAILSCALE_MGMT_AUTH_KEY }}
+          GH_RUNNER_APP_ID: ${{ secrets.GH_RUNNER_APP_ID }}
+          GH_RUNNER_APP_INSTALLATION_ID: ${{ secrets.GH_RUNNER_APP_INSTALLATION_ID }}
+          GH_RUNNER_APP_PRIVATE_KEY: ${{ secrets.GH_RUNNER_APP_PRIVATE_KEY }}
+          # SHA256 is the public checksum of the runner archive, not a secret.
+          GH_RUNNER_SHA256: ${{ secrets.GH_RUNNER_SHA256 }}
         run: |
           set -euo pipefail
           # Input was already strict-validated in the dedicated
@@ -126,11 +177,20 @@ jobs:
           # tooling install). This block only assembles the optional
           # --extra-vars argv pair.
           EXTRA_VARS_ARG=()
+          CHECK_ARG=()
           if [ -n "${EXTRA_VARS}" ]; then
             EXTRA_VARS_ARG=( --extra-vars "$EXTRA_VARS" )
           fi
+          if [ "${CHECK_MODE}" = "true" ]; then
+            CHECK_ARG=( --check --diff )
+            echo "### Dry run (--check --diff)" >> "$GITHUB_STEP_SUMMARY"
+            echo "Nothing on the host was changed by this run. Read it as a configuration-drift report, not a guarantee that the real run will succeed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # No --private-key: the connection is Tailscale-SSH keyless as the
+          # `provision` user (ansible_user in host_vars), authorised by the
+          # tailnet ACL (tag:ci-provision -> tag:server-* as provision).
           ansible-playbook site.yml \
             --inventory inventory/hosts.yml \
             --limit "$LIMIT_TARGET" \
             "${EXTRA_VARS_ARG[@]}" \
-            --private-key ~/.ssh/id_ansible
+            "${CHECK_ARG[@]}"

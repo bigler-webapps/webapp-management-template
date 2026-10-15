@@ -13,7 +13,7 @@ heutigen Stand des bigler-webapps Platform-Layers bringt.
   match current webapp-template pin (frontend/package.json at HEAD)
 
 **Annahme zum Ausgangszustand des Tenants:**
-- `webapp-management` Klon noch ohne: shared-Renovate, update-server-Workflow,
+- `webapp-management` Klon noch ohne: shared-Renovate, ansible-provision-Workflow,
   Kuma v2, dynamic middlewares (media-/upload-/auth-ratelimit), prConcurrentLimit-Tuning,
   concurrency-group in Deploy-Workflows, flock in deploy-app
 - App (Photogallery o.ä.): Django <6, vite 7, vitest <4, pnpm <11, i18next 25,
@@ -252,11 +252,9 @@ Erwartete Workflows (alle uebernehmen falls fehlend):
 - `deploy-traefik.yml` (Deploy auf Push to main, Matrix ueber Inventory)
 - `janitor.yml` (Docker prune etc.)
 - `maintenance.yml` (apt, security-updates)
-- `provision-server.yml` (Neue Server bootstrappen)
+- `ansible-provision.yml` (Server bootstrappen und inkrementell pflegen, Tailscale-SSH keyless)
 - `restore.yml` (Disaster-Recovery)
 - `sync-kuma-notifications.yml` (Discord-Webhooks → Kuma)
-- `sync-ssh-access.yml` (Public-Keys-Verteilung) **(DEPRECATED — fallback only)**
-- `update-server.yml` (Inkrementelle Server-Config-Pflege — inotify-Limits etc.)
 
 **4.2 `dynamic/middlewares.yml` ergaenzen** (7 Middlewares aus dem
 upload-hardening Bundle):
@@ -307,7 +305,7 @@ targets:
 **4.7 Renovate-Onboarding fuer den Tenant-Stack** (bereits in Phase 2 erledigt).
 
 Commit-Set (pro Bereich einen Commit):
-- `feat(workflows): adopt update-server / apply-rulesets / sync-* workflows`
+- `feat(workflows): adopt ansible-provision / apply-rulesets / sync-* workflows`
 - `feat(traefik): add media + body-limit + ratelimit middlewares`
 - `chore(deps): bump uptime-kuma 1 → 2` (separat, eigener PR)
 - `ci: add concurrency group to deploy workflows`
@@ -411,15 +409,15 @@ Monitoren — `/api/healthz` muss live antworten (kommt aus `django-core-micha 2
 
 (Erfolgt vom Tenant-Owner mit SSH-Zugriff, Agent koordiniert nur):
 
-> **VERALTET: `sync-ssh-access.yml` ist deprecated.**
-> **Kanonischer Weg: `ansible-provision.yml` mit `--tags ssh_sync`.**
+> **`sync-ssh-access.yml` wurde entfernt.**
+> **Kanonischer Weg: `ansible-provision.yml`.**
 
 > **Warnung: proton-pass-cli darf NICHT direkt aufgerufen werden.**
 > **Alle Secrets werden ausschliesslich via `sync-secrets` Wrapper abgerufen.**
 
 1. `sync-secrets --secret-source proton` lokal ausfuehren (CLI-Wrapper, gibt keine
    Secret-Werte aus) → Secrets in GitHub-Environments aktualisiert
-2. SSH-Public-Keys aktualisieren via `ansible-provision.yml --tags ssh_sync`
+2. SSH-Public-Keys aktualisieren via `ansible-provision.yml`
 3. Erster Deploy via Push auf `develop` (Staging) bzw. `main` (Production)
 4. `register-kuma-monitors` (in Deploy-Workflow) registriert Monitore automatisch
 5. Discord-Notifications via `sync-kuma-notifications.yml` zugewiesen

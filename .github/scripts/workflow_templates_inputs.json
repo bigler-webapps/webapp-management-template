@@ -1,0 +1,374 @@
+{
+  "version": "v2.13.0",
+  "composites": {
+    "backup": {
+      "inputs": [
+        "b2_app_key",
+        "b2_key_id",
+        "infra_paths_file",
+        "ops_scripts_path",
+        "restic_password",
+        "restic_repo_b2",
+        "ssh_host",
+        "ssh_user",
+        "sync_staging",
+        "sync_staging_apps_json",
+        "target",
+        "ts_oauth_client_id",
+        "ts_oauth_secret",
+        "ts_tag"
+      ],
+      "required": [
+        "b2_app_key",
+        "b2_key_id",
+        "restic_password",
+        "restic_repo_b2",
+        "ssh_host",
+        "ssh_user",
+        "target",
+        "ts_oauth_client_id",
+        "ts_oauth_secret"
+      ]
+    },
+    "deploy-app": {
+      "inputs": [
+        "environment",
+        "file_secret_1_content",
+        "file_secret_1_mode",
+        "file_secret_1_name",
+        "file_secret_2_content",
+        "file_secret_2_mode",
+        "file_secret_2_name",
+        "file_secret_target_subdir",
+        "github_token",
+        "hram_engine_token",
+        "image_tag",
+        "provision_file_secrets",
+        "secrets_context_json",
+        "skip_migrate",
+        "ssh_host",
+        "ssh_user",
+        "tailnet_suffix",
+        "ts_oauth_client_id",
+        "ts_oauth_secret",
+        "ts_tag",
+        "use_build_fallback"
+      ],
+      "required": [
+        "image_tag",
+        "secrets_context_json",
+        "ts_oauth_client_id",
+        "ts_oauth_secret"
+      ]
+    },
+    "deploy-traefik": {
+      "inputs": [
+        "compose_profiles",
+        "remote_path",
+        "secrets_context_json",
+        "ssh_host",
+        "ssh_user",
+        "target",
+        "target_environment",
+        "ts_oauth_client_id",
+        "ts_oauth_secret",
+        "ts_tag"
+      ],
+      "required": [
+        "secrets_context_json",
+        "ssh_host",
+        "ssh_user",
+        "target",
+        "ts_oauth_client_id",
+        "ts_oauth_secret"
+      ]
+    },
+    "janitor": {
+      "inputs": [
+        "image_retention",
+        "ops_scripts_path",
+        "remote_scripts_path",
+        "ssh_host",
+        "ssh_user",
+        "target",
+        "ts_oauth_client_id",
+        "ts_oauth_secret",
+        "ts_tag"
+      ],
+      "required": [
+        "ssh_host",
+        "ssh_user",
+        "target",
+        "ts_oauth_client_id",
+        "ts_oauth_secret"
+      ]
+    },
+    "maintenance": {
+      "inputs": [
+        "apply_updates",
+        "expected_container_tokens_json",
+        "force_reboot",
+        "ssh_host",
+        "ssh_user",
+        "target",
+        "ts_oauth_client_id",
+        "ts_oauth_secret",
+        "ts_tag"
+      ],
+      "required": [
+        "ssh_host",
+        "ssh_user",
+        "target",
+        "ts_oauth_client_id",
+        "ts_oauth_secret"
+      ]
+    },
+    "publish-backend-image": {
+      "inputs": [
+        "backend_build_context",
+        "backend_dockerfile",
+        "backend_target",
+        "existing_image",
+        "github_token",
+        "hram_engine_read_token",
+        "image_tag",
+        "vite_app_mui_license_key",
+        "vite_survey_app_api_base_url",
+        "vite_survey_app_site_slug"
+      ],
+      "required": [
+        "github_token",
+        "image_tag"
+      ]
+    },
+    "register-kuma-monitors": {
+      "inputs": [
+        "config_path",
+        "kuma_password",
+        "kuma_url",
+        "kuma_user",
+        "project_yaml_path",
+        "prune",
+        "ts_oauth_client_id",
+        "ts_oauth_secret",
+        "ts_tag"
+      ],
+      "required": [
+        "kuma_password",
+        "kuma_user",
+        "ts_oauth_client_id",
+        "ts_oauth_secret"
+      ]
+    },
+    "restic-check-b2": {
+      "inputs": [
+        "b2_app_key",
+        "b2_key_id",
+        "read_data_subset_n",
+        "read_data_subset_of",
+        "restic_password",
+        "restic_repo_b2"
+      ],
+      "required": [
+        "b2_app_key",
+        "b2_key_id",
+        "read_data_subset_n",
+        "restic_password",
+        "restic_repo_b2"
+      ]
+    },
+    "restic-check-local": {
+      "inputs": [
+        "restic_password",
+        "restic_repo_local",
+        "ssh_host",
+        "ssh_user",
+        "target",
+        "ts_oauth_client_id",
+        "ts_oauth_secret",
+        "ts_tag"
+      ],
+      "required": [
+        "restic_password",
+        "ssh_host",
+        "ssh_user",
+        "target",
+        "ts_oauth_client_id",
+        "ts_oauth_secret"
+      ]
+    },
+    "restic-init": {
+      "inputs": [
+        "b2_app_key",
+        "b2_key_id",
+        "restic_password",
+        "restic_repo_b2",
+        "target"
+      ],
+      "required": [
+        "b2_app_key",
+        "b2_key_id",
+        "restic_password",
+        "restic_repo_b2",
+        "target"
+      ]
+    },
+    "restore": {
+      "inputs": [
+        "app_name",
+        "b2_app_key",
+        "b2_key_id",
+        "ops_scripts_path",
+        "restic_password",
+        "restic_repo_b2",
+        "snapshot_id",
+        "ssh_host",
+        "ssh_user",
+        "target",
+        "target_env",
+        "ts_oauth_client_id",
+        "ts_oauth_secret",
+        "ts_tag"
+      ],
+      "required": [
+        "app_name",
+        "b2_app_key",
+        "b2_key_id",
+        "restic_password",
+        "restic_repo_b2",
+        "ssh_host",
+        "ssh_user",
+        "target",
+        "target_env",
+        "ts_oauth_client_id",
+        "ts_oauth_secret"
+      ]
+    },
+    "restore-dest-import": {
+      "inputs": [
+        "app_name",
+        "artifact_name",
+        "auto_restart",
+        "dest_compose_path",
+        "dest_subtarget",
+        "dest_target",
+        "github_token",
+        "ops_scripts_path",
+        "ssh_host",
+        "ssh_user",
+        "transport_key",
+        "ts_oauth_client_id",
+        "ts_oauth_secret",
+        "ts_tag"
+      ],
+      "required": [
+        "app_name",
+        "artifact_name",
+        "dest_subtarget",
+        "dest_target",
+        "github_token",
+        "ssh_host",
+        "ssh_user",
+        "transport_key",
+        "ts_oauth_client_id",
+        "ts_oauth_secret"
+      ]
+    },
+    "restore-source-export": {
+      "inputs": [
+        "app_name",
+        "artifact_retention_days",
+        "b2_app_key",
+        "b2_key_id",
+        "restic_host",
+        "restic_password",
+        "restic_repo_b2",
+        "snapshot_id",
+        "source_env",
+        "source_target",
+        "transport_key"
+      ],
+      "required": [
+        "app_name",
+        "b2_app_key",
+        "b2_key_id",
+        "restic_password",
+        "restic_repo_b2",
+        "source_env",
+        "source_target",
+        "transport_key"
+      ]
+    },
+    "sync-kuma-notifications": {
+      "inputs": [
+        "cockpit_webhook_secret",
+        "config_path",
+        "discord_webhook_url",
+        "kuma_password",
+        "kuma_url",
+        "kuma_user",
+        "prune",
+        "smtp_from",
+        "smtp_host",
+        "smtp_password",
+        "smtp_port",
+        "smtp_secure",
+        "smtp_to",
+        "smtp_username",
+        "ts_oauth_client_id",
+        "ts_oauth_secret",
+        "ts_tag"
+      ],
+      "required": [
+        "kuma_password",
+        "kuma_user",
+        "ts_oauth_client_id",
+        "ts_oauth_secret"
+      ]
+    },
+    "tailnet-connect": {
+      "inputs": [
+        "ts_oauth_client_id",
+        "ts_oauth_secret",
+        "ts_tag",
+        "version"
+      ],
+      "required": [
+        "ts_oauth_client_id",
+        "ts_oauth_secret"
+      ]
+    },
+    "terraform-apply": {
+      "inputs": [
+        "cloudflare_access_api_token",
+        "cloudflare_account_id",
+        "cloudflare_api_token",
+        "terraform_version",
+        "tf_cloud_token",
+        "working_directory"
+      ],
+      "required": [
+        "cloudflare_account_id",
+        "cloudflare_api_token",
+        "tf_cloud_token"
+      ]
+    },
+    "terraform-plan": {
+      "inputs": [
+        "cloudflare_access_api_token",
+        "cloudflare_account_id",
+        "cloudflare_api_token",
+        "github_token",
+        "terraform_version",
+        "tf_cloud_token",
+        "working_directory"
+      ],
+      "required": [
+        "cloudflare_account_id",
+        "cloudflare_api_token",
+        "github_token",
+        "tf_cloud_token"
+      ]
+    }
+  }
+}

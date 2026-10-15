@@ -38,16 +38,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: bigler-webapps/workflow-templates/.github/actions/sync-kuma-notifications@v2.1.3
+      - uses: bigler-webapps/workflow-templates/.github/actions/sync-kuma-notifications@v2.13.0
         with:
           config_path: monitoring/notifications.yml
           # Kuma runs on the dedicated monitoring host.
           # Replace with your monitoring host's Tailscale MagicDNS name:
           #   https://monitoring.<your-tailnet>.ts.net:8443
           kuma_url: ${{ secrets.KUMA_URL }}
-          # v2.0.0+: Tailscale-SSH-only — no ssh_private_key.
-          ssh_host: ${{ inputs.target }}.${{ secrets.TAILNET_DOMAIN }}
-          ssh_user: deploy
           kuma_user: ${{ secrets.KUMA_AUTOMATION_USER }}
           kuma_password: ${{ secrets.KUMA_AUTOMATION_PASSWORD }}
           discord_webhook_url: ${{ secrets.DISCORD_WEBHOOK_URL }}

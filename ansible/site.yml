@@ -13,8 +13,7 @@
 
   pre_tasks:
     # Read every committed deploy/infrastructure pubkey and build the
-    # authorized_keys list that the deploy_user role consumes. Mirrors
-    # the legacy sync-ssh-access composite (which globs the same paths).
+    # authorized_keys list that the deploy_user role consumes.
     - name: Build deploy_user_authorized_keys from access/{deploy,infrastructure}/*.pub
       ansible.builtin.set_fact:
         deploy_user_authorized_keys: >-

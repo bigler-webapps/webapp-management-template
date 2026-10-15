@@ -131,8 +131,8 @@ jobs:
     environment: ${{ matrix.source }}
     steps:
       # restore-source-export does NOT SSH (pulls restic from B2 on the runner).
-      # No Tailnet inputs needed; safe to stay on the latest v1.x.
-      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-source-export@v2.0.3
+      # No Tailnet inputs needed.
+      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-source-export@v2.13.0
         with:
           source_target: ${{ matrix.source }}
           app_name: ${{ matrix.app }}
@@ -168,14 +168,13 @@ jobs:
           path: ops-scripts
 
       # restore-dest-import SSHes to staging; Tailnet path active.
-      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-dest-import@v2.0.3
+      - uses: YOUR_GITHUB_ORG/workflow-templates/.github/actions/restore-dest-import@v2.13.0
         with:
           dest_target: staging
           app_name: ${{ matrix.app }}
           dest_subtarget: staging
           auto_restart: 'true'
           dest_compose_path: /srv/apps/${{ matrix.app }}_stage
-          # v2.0.0: Tailscale-SSH-only — no ssh_private_key.
           ssh_host: staging.your-tailnet-domain
           ssh_user: deploy
           # Artifact name is generated deterministically by restore-source-export

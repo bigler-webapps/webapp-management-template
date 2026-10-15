@@ -599,12 +599,9 @@ The workflow takes ~3--5 minutes for a fresh host. Expected role activity:
 > see Part B, Section B.8 (soak criteria) and B.8.2 (lockdown procedure). If you close it
 > too early and Tailscale fails, recovery is via the VPS rescue console only -- slow and stressful.
 
-The legacy `provision-server.yml` + `update-server.yml` workflows are DEPRECATED -- they remain
-in the template only for repos that have not yet adopted the Ansible role-set.
-
-> **Note on SSH access sync**: the canonical path for syncing SSH access keys is
-> `ansible-provision.yml --tags ssh`. The `sync-ssh-access.yml` workflow is deprecated and
-> should be used only as a fallback if the Ansible path is unavailable.
+The former `provision-server.yml`, `update-server.yml` and `sync-ssh-access.yml` workflows are
+removed (the `workflow-templates` composites behind them no longer exist). Provisioning and
+updates, including SSH access sync, go through `ansible-provision.yml`.
 
 **If something fails:** SSH into the server with your root key and investigate. Do not re-run
 blind; understand what happened.
@@ -1073,17 +1070,15 @@ If the server does not exist yet, **PAUSE** and execute Part A first.
 
 #### B.6.2 Sync SSH access for the new tenant
 
-The canonical path is `ansible-provision.yml --tags ssh`:
+The canonical path is `ansible-provision.yml` (a full run converges the keys):
 
 ```bash
 cd <webapps-root>/webapp-management
-gh workflow run ansible-provision.yml --field target=staging --field tags=ssh
+gh workflow run ansible-provision.yml --field target=staging
 gh run watch
 ```
 
-> Fallback only: if the Ansible path is unavailable, the deprecated `sync-ssh-access.yml`
-> workflow can be used temporarily:
-> `gh workflow run sync-ssh-access.yml --field target=staging`
+> The former `sync-ssh-access.yml` fallback is removed; `ansible-provision.yml` is the only path.
 
 #### B.6.3 Register the app's directory on the server
 

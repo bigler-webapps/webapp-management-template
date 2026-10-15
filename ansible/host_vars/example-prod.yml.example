@@ -2,8 +2,15 @@
 # Example host_vars — rename to <hostname>.yml (matching inventory/hosts.yml)
 # after instantiating from this template.
 #
-# One file per host. Defines how Ansible reaches the host for the initial
-# (pre-Tailscale) bootstrap. Subsequent runs go via Tailscale (see
-# `tailscale_ssh: true` in group_vars/all.yml).
-ansible_host: 1.2.3.4
-ansible_user: root
+# One file per host. CI (ansible-provision.yml) reaches the host over the
+# tailnet, Tailscale-SSH keyless, as the `provision` user (tailnet ACL:
+# tag:ci-provision -> tag:server-*). There is no root SSH key in CI.
+ansible_host: your-host.your-tailnet-domain
+ansible_user: provision
+
+# FIRST run against a brand-new host (not yet on the tailnet, no `provision`
+# user yet) is an operator step from your own machine, over the public IP as
+# root with your own SSH key, e.g.:
+#   ansible-playbook ansible/site.yml --limit <hostname> \
+#     -e ansible_user=root -e ansible_host=<public-ip>
+# After that run the host is on the tailnet and CI takes over.

@@ -114,8 +114,9 @@ If the server is not booting:
 If you need to recreate the entire tenant on a new server:
 
 1. Provision a new Hetzner server (same OS, similar specs)
-2. Update `SSH_HOST` GitHub secret to new IP
-3. Run `provision-server.yml`
+2. Point the host's `ansible_host` in `ansible/host_vars/<host>.yml` at the new server
+3. Run the first `site.yml` bootstrap yourself as root (see
+   `ansible/host_vars/example-prod.yml.example`), then `ansible-provision.yml`
 4. Run `deploy-traefik.yml`
 5. For each app: run `restore.yml` with `target_env=production`, `snapshot_id=latest`
 6. Run app deploy workflows

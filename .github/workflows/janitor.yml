@@ -31,9 +31,11 @@ jobs:
           path: ops-scripts
 
       - name: Run janitor
-        uses: bigler-webapps/workflow-templates/.github/actions/janitor@v2.0.3
+        uses: bigler-webapps/workflow-templates/.github/actions/janitor@v2.13.0
         with:
           target: ${{ inputs.target || 'production' }}
-          ssh_host: ${{ secrets.SSH_HOST }}
-          ssh_user: ${{ secrets.SSH_USER }}
-          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # TODO: tenant-specific - replace your-tailnet-domain with your tailnet's MagicDNS name
+          ssh_host: ${{ inputs.target || 'production' }}.your-tailnet-domain
+          ssh_user: deploy
+          ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts_oauth_secret: ${{ secrets.TS_OAUTH_SECRET }}

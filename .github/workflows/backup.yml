@@ -37,14 +37,16 @@ jobs:
           path: ops-scripts
 
       - name: Run backup
-        uses: bigler-webapps/workflow-templates/.github/actions/backup@v2.0.3
+        uses: bigler-webapps/workflow-templates/.github/actions/backup@v2.13.0
         with:
           target: ${{ inputs.target || 'production' }}
           sync_staging: ${{ inputs.sync_staging || false }}
-          ssh_host: ${{ secrets.SSH_HOST }}
-          ssh_user: ${{ secrets.SSH_USER }}
-          ssh_private_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # TODO: tenant-specific - replace your-tailnet-domain with your tailnet's MagicDNS name
+          ssh_host: ${{ inputs.target || 'production' }}.your-tailnet-domain
+          ssh_user: deploy
           restic_repo_b2: ${{ secrets.RESTIC_REPO_B2 }}
           restic_password: ${{ secrets.RESTIC_PASSWORD }}
           b2_key_id: ${{ secrets.B2_KEY_ID }}
           b2_app_key: ${{ secrets.B2_APP_KEY }}
+          ts_oauth_client_id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts_oauth_secret: ${{ secrets.TS_OAUTH_SECRET }}
