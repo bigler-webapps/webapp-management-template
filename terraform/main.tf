@@ -1,7 +1,7 @@
 terraform {
   required_version = ">= 1.16.5"
   required_providers {
-    cloudflare = { source = "cloudflare/cloudflare", version = "~> 5.27" }
+    cloudflare = { source = "cloudflare/cloudflare", version = "~> 5.28" }
   }
   cloud {
     organization = "YOUR-TF-CLOUD-ORG"
