@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: bigler-webapps/workflow-templates/.github/actions/sync-kuma-notifications@v2.13.0
+      - uses: bigler-webapps/workflow-templates/.github/actions/sync-kuma-notifications@v2.13.1
         with:
           config_path: monitoring/notifications.yml
           # Kuma runs on the dedicated monitoring host.
