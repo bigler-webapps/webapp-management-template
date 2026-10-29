@@ -1,0 +1,4 @@
+---
+- name: Ensure localhost has IPv4 and IPv6 loopback records on runners
+  runner_localhost:
+    path: /etc/hosts

@@ -50,6 +50,8 @@
     # mgmt tailscaled (second instance, persistent, tag:ci-runner-host, --ssh).
     # This is the daemon CI later connects through — established ONCE here.
     - biglerconsult.infra.tailscale_mgmt
+    # Keep localhost resolution consistent with both loopback families.
+    - runner_localhost
 
   post_tasks:
     # Operator break-glass root keys (so autogroup:admin → tag:ci-runner-host as
