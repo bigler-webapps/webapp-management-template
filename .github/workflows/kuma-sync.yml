@@ -45,6 +45,9 @@ jobs:
         with:
           app-id: ${{ secrets.KUMA_SYNC_APP_ID }}
           private-key: ${{ secrets.KUMA_SYNC_APP_PRIVATE_KEY }}
+          # Contents read is all the registry/Kuma/inventory readers need; narrowing the token
+          # keeps it read-only even if the App itself holds more.
+          permission-contents: read
           owner: YOUR_GITHUB_ORG
 
       - name: Ensure tailnet (probe-guard; cache + retry on cold join)
