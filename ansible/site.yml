@@ -164,6 +164,7 @@
 
   roles:
     - biglerconsult.infra.base
+    - runner_localhost
     - biglerconsult.infra.docker
     # provision user: identical to the server-play variant so that autonomous
     # CI (tag:ci-provision → tag:ci-runner-host as provision) can connect and
